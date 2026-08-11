@@ -2,7 +2,8 @@
 
 JSON Schema Draft 2020-12 파일은 `src/ai_work_harness/schemas/v2/`가 소유한다. Python
 runtime 모델은 frozen dataclass와 Enum/문자열 literal을 사용하며 Pydantic에 의존하지
-않는다. 문서보다 schema와 core 검증이 우선한다.
+않는다. 문서보다 schema와 core 검증이 우선한다. v0.5의 guided TTY와 raw CLI/MCP는 별도
+저장 형식을 만들지 않고 같은 v2 artifact envelope, payload schema와 ref registry를 사용한다.
 
 ## Canonical JSON
 
@@ -58,13 +59,33 @@ logical ID로 경로를 만들기 전에 안전한 패턴을 검증하며 symlin
 | `comparison` | 안정된 순서, 결과 matrix, evidence count, Must 적격성; scoring은 null |
 | `recommendation` | Must 적격 후보 한 개 또는 abstain; final decision이 아님 |
 | `final-decision` | select/reject_all/defer/request_more_evidence와 위험 수용 |
-| `human-confirmation` | artifact digest challenge 결과; identity_verified는 항상 false |
+| `human-confirmation` | decision artifact 또는 outbound manifest에 대한 인간 확인; method별 subject 제약이 있으며 identity_verified는 항상 false |
 | `approval-challenge` | bundle, source snapshot, nonce, proposed disposition, `issued_at`, `expires_at` binding |
 | `human-approval` | challenge와 bundle digest, disposition, reason에 binding |
 | `decision-bundle` | approval 대상 artifact digest map |
 | `agent-run` | 성공한 model/prompt/input/outbound/transcript/result binding과 usage |
 | `migration-report` | v1 fingerprint, copied input과 승격하지 않은 gate 기록 |
 | `decision-view.v1` | sanitized offline viewer export와 integrity digest |
+
+### Human confirmation method
+
+`human-confirmation.method`는 다음 세 값만 허용한다.
+
+| Method | 허용 subject | 인터페이스 의미 |
+|---|---|---|
+| `digest_challenge` | decision-frame/candidate-set/criteria-set 또는 outbound-manifest | raw CLI가 full artifact/manifest digest를 명시해 확인 |
+| `guided_semantic_review` | decision-frame/candidate-set/criteria-set만 | guide가 전체 semantic summary와 fingerprint를 보여준 뒤 별도 confirmation snapshot 생성 |
+| `guided_exact_phrase` | outbound-manifest만 | guide에서 `SEND OPENAI <12자 fingerprint>`가 정확히 일치한 뒤 full manifest digest에 binding |
+
+세 method 모두 `actor_label=local_operator`, `identity_verified=false`, full
+`subject_sha256`와 `confirmed_at`을 저장한다. outbound confirmation은 payload 안에 closed
+`outbound_manifest` 전체도 저장하며 활성 snapshot에서는 `agent_consent` ref로 가리킨다.
+`agent_consent`는 새 artifact type이 아니라 `human-confirmation`의 논리적 ref 역할이다.
+
+raw와 guided는 confirmation method를 제외한 semantic payload와 활성 ref topology가
+동등하다. method가 canonical payload 일부이므로 confirmation 이후 두 실행의 artifact와
+snapshot digest는 달라질 수 있으며, 어느 한쪽 digest를 다른 인터페이스에 그대로 대입해서는
+안 된다.
 
 `approval-challenge`의 `expires_at`은 core가 `issued_at + 10분`으로 계산한다. approval의
 `approved_at`은 `issued_at <= approved_at < expires_at`이어야 하므로 발급 시각보다 이른
@@ -79,6 +100,20 @@ object CAS는 프로젝트의 모든 v2 session이 공유하지만 snapshot은 s
 않으며, 손상된 session chain은 object를 live로 만들지 못하고 무결성 issue로 보고된다.
 snapshot reachability와 orphan snapshot 판정은 선택한 session 범위에 머문다. orphan은
 보고만 하며 자동 GC하지 않는다.
+
+## Pinned operator read model
+
+`decision next`의 `operator-plan.v1`은 저장되는 artifact가 아니라 하나의 verified snapshot에서
+결정적으로 파생되는 read model이다. raw envelope가 `session_id`, `generation`, full
+`snapshot_sha256`를 운반하고 plan은 observed time, stage, recommended/available action,
+sanitized summary, pending review, final constraint, public challenge 상태, readiness와 stale
+reason을 담는다.
+
+public challenge에는 status, disposition, issued/expiry time, remaining seconds와 12자 bundle
+fingerprint만 있고 nonce, challenge ID, full bundle digest는 없다. raw source와 excerpt도
+plan에 포함하지 않는다. 내부 `ValidatedOperatorState`는 active artifact를 immutable view로
+보유하지만 저장 계약이 아니며, integrity failure가 있으면 plan을 부분 생성하지 않고
+fail-closed한다.
 
 ## Evidence와 evaluation
 

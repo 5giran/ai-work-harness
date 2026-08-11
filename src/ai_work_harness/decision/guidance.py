@@ -678,9 +678,11 @@ def plan_operator_next(
     actions: tuple[OperatorAction, ...]
 
     # Priority is intentional and mirrors the immutable workflow: terminal
-    # approval, active challenge, final, comparison/recommendation,
-    # evaluation/review/comparison, evidence, criteria, candidates, frame,
-    # source.
+    # approval, active challenge, active outbound consent, final,
+    # comparison/recommendation, evaluation/review/comparison, evidence,
+    # criteria, candidates, frame, source.  Consent must precede the graph
+    # stage because a raw client may have consented after downstream artifacts
+    # existed; guide must resume that exact request instead of hiding it.
     if "human_approval" in refs:
         stage = OperatorStage.COMPLETE
         recommended = OperatorAction.EXPORT_DECISION
@@ -698,6 +700,18 @@ def plan_operator_next(
         else:
             recommended = OperatorAction.REFRESH_STATE
         actions = (recommended,)
+    elif (outbound_operation := _outbound_operation(state)) == "evaluations":
+        stage = OperatorStage.EVALUATION
+        recommended = OperatorAction.RETRY_EVALUATIONS
+        actions = (recommended, OperatorAction.IMPORT_EVALUATIONS)
+    elif outbound_operation == "recommendation":
+        stage = OperatorStage.RECOMMENDATION
+        recommended = OperatorAction.RETRY_RECOMMENDATION
+        actions = (
+            recommended,
+            OperatorAction.IMPORT_RECOMMENDATION,
+            OperatorAction.RECORD_FINAL_DECISION,
+        )
     elif "final_decision" in refs:
         stage = OperatorStage.APPROVAL
         recommended = OperatorAction.CREATE_APPROVAL_CHALLENGE
@@ -708,21 +722,12 @@ def plan_operator_next(
         actions = (recommended,)
     elif "comparison" in refs:
         stage = OperatorStage.RECOMMENDATION
-        outbound_operation = _outbound_operation(state)
-        if outbound_operation == "recommendation":
-            recommended = OperatorAction.RETRY_RECOMMENDATION
-            actions = (
-                recommended,
-                OperatorAction.IMPORT_RECOMMENDATION,
-                OperatorAction.RECORD_FINAL_DECISION,
-            )
-        else:
-            recommended = OperatorAction.GENERATE_RECOMMENDATION
-            actions = (
-                recommended,
-                OperatorAction.IMPORT_RECOMMENDATION,
-                OperatorAction.RECORD_FINAL_DECISION,
-            )
+        recommended = OperatorAction.GENERATE_RECOMMENDATION
+        actions = (
+            recommended,
+            OperatorAction.IMPORT_RECOMMENDATION,
+            OperatorAction.RECORD_FINAL_DECISION,
+        )
     elif "evaluation_set" in refs:
         revision_required = any(
             item.status is PendingReviewStatus.REVISION_REQUIRED for item in pending_reviews
@@ -744,13 +749,8 @@ def plan_operator_next(
             actions = (recommended,)
     elif "evidence_set" in refs:
         stage = OperatorStage.EVALUATION
-        outbound_operation = _outbound_operation(state)
-        if outbound_operation == "evaluations":
-            recommended = OperatorAction.RETRY_EVALUATIONS
-            actions = (recommended, OperatorAction.IMPORT_EVALUATIONS)
-        else:
-            recommended = OperatorAction.IMPORT_EVALUATIONS
-            actions = (recommended, OperatorAction.GENERATE_EVALUATIONS)
+        recommended = OperatorAction.IMPORT_EVALUATIONS
+        actions = (recommended, OperatorAction.GENERATE_EVALUATIONS)
     elif "criteria_confirmation" in refs:
         stage = OperatorStage.EVIDENCE
         recommended = OperatorAction.IMPORT_EVIDENCE

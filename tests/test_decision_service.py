@@ -769,6 +769,8 @@ def test_openai_evaluation_requires_consent_and_replays_without_network(
         expected_manifest_sha=preview["outbound_manifest_sha256"],
         expected_parent=parent,
     )
+    raw_consent = service.store.read_artifact(str(consent["artifact_sha256"]))
+    assert raw_consent.payload["method"] == "digest_challenge"
     provider = OpenAIProvider(
         client=FakeOpenAIClient(_tool_response("submit_evaluations", draft_payload)),
         model=preview["outbound_manifest"]["model"],

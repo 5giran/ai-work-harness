@@ -39,7 +39,7 @@ jobs:
           AI_WORK_HARNESS_OPENAI_MODEL: ${{ inputs.model }}
         run: |
           python scripts/run_synthetic_decision_demo.py \
-            --cli ai-work-harness \
             --root "$RUNNER_TEMP/ai-work-harness-live-smoke" \
             --test-operator \
+            --lang en \
             --evaluation-provider openai

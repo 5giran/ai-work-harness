@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,8 @@ _CHANGE_REFS = (
     "final_decision",
 )
 
+OpenAIProviderFactory = Callable[[Mapping[str, Any]], Any]
+
 
 def _display_value(value: Any) -> Any:
     """Convert immutable service views into ordinary JSON display values."""
@@ -66,12 +68,14 @@ class GuidedDecisionController:
         *,
         root: Path,
         language: str = "ko",
+        openai_provider_factory: OpenAIProviderFactory | None = None,
     ) -> None:
         self.operator = operator
         self.console = console
         self.root = root.resolve()
         self.catalog = get_catalog(language)
         self.language = self.catalog.language
+        self.openai_provider_factory = openai_provider_factory
 
     def _t(self, key: str, **values: object) -> str:
         return self.catalog.text(key, **values)
@@ -670,9 +674,28 @@ class GuidedDecisionController:
             self.console.write(f"{line_number:>4}: {line}")
 
     def _edit_evaluations(self) -> None:
+        if self.operator.state.outbound_consent_operation == "evaluations":
+            recovery = self._openai_recovery_choice("evaluations")
+            if recovery == "retry":
+                self._run_consented_openai("evaluations")
+                return
+            if recovery == "agent":
+                self.console.write(
+                    self._bi(
+                        "MCP/agent가 evaluation draft를 기록한 뒤 재개하세요.",
+                        "Have MCP/the agent record an evaluation draft, then resume.",
+                    )
+                )
+                raise QuitRequested
+            payload = self._load_json_payload()
+            self._perform(self.operator.import_evaluations, payload)
+            return
         choices = [PromptChoice("json", self._t("draft.import"))]
         if self.operator.plan.recommended_action is not OperatorAction.REVISE_EVALUATIONS:
-            choices.insert(0, PromptChoice("fixture", "Fixture"))
+            choices[:0] = (
+                PromptChoice("fixture", "Fixture"),
+                PromptChoice("openai", self._t("openai.option")),
+            )
         choices.append(PromptChoice("agent", self._t("draft.agent")))
         selected = self._choice(
             self._bi("평가 초안 방식: ", "Evaluation draft mode: "),
@@ -689,6 +712,9 @@ class GuidedDecisionController:
         if selected == "json":
             payload = self._load_json_payload()
             self._perform(self.operator.import_evaluations, payload)
+            return
+        if selected == "openai":
+            self._fresh_openai("evaluations")
             return
         fixture = FixtureProvider().evaluation_provider()
         self._perform(
@@ -869,10 +895,31 @@ class GuidedDecisionController:
         self.console.write(self._bi(f"적격 후보: {eligible}", f"Eligible candidates: {eligible}"))
 
     def _recommendation(self) -> None:
+        if self.operator.state.outbound_consent_operation == "recommendation":
+            recovery = self._openai_recovery_choice("recommendation")
+            if recovery == "retry":
+                self._run_consented_openai("recommendation")
+                return
+            if recovery == "agent":
+                self.console.write(
+                    self._bi(
+                        "MCP/agent가 recommendation draft를 기록한 뒤 재개하세요.",
+                        "Have MCP/the agent record a recommendation draft, then resume.",
+                    )
+                )
+                raise QuitRequested
+            payload = self._load_json_payload()
+            self._perform(
+                self.operator.record_recommendation,
+                payload,
+                producer_kind="local_operator",
+            )
+            return
         selected = self._choice(
             self._bi("추천 단계: ", "Recommendation step: "),
             (
                 PromptChoice("fixture", "Fixture"),
+                PromptChoice("openai", self._t("openai.option")),
                 PromptChoice("json", self._t("draft.import")),
                 PromptChoice(
                     "skip",
@@ -891,12 +938,116 @@ class GuidedDecisionController:
                 producer_kind="local_operator",
             )
             return
+        if selected == "openai":
+            self._fresh_openai("recommendation")
+            return
         fixture = FixtureProvider().recommendation_provider()
         self._perform(
             self.operator.mutate,
             self.operator.service.generate_recommendation,
             fixture,
             producer_kind="fixture",
+        )
+
+    def _fresh_openai(self, operation: str) -> None:
+        preview = self.operator.preview_agent(operation=operation)
+        manifest = preview.get("outbound_manifest")
+        manifest_sha = preview.get("outbound_manifest_sha256")
+        if not isinstance(manifest, Mapping) or not isinstance(manifest_sha, str):
+            raise HarnessError(
+                "OUTBOUND_MANIFEST_INVALID",
+                "OpenAI preview did not return a valid outbound manifest",
+                exit_code=5,
+            )
+        self._show_openai_manifest(manifest, manifest_sha)
+        fingerprint = manifest_sha[:12]
+        phrase = f"SEND OPENAI {fingerprint}"
+        entered = self.console.read(f"{self._t('openai.phrase', phrase=phrase)}\n> ")
+        if entered != phrase:
+            self.console.write(self._t("openai.mismatch"))
+            return
+        if not self._perform(
+            self.operator.consent_agent,
+            operation=operation,
+            preview=preview,
+        ):
+            return
+        self._run_consented_openai(operation)
+
+    def _openai_recovery_choice(self, operation: str) -> str:
+        consent = self._payload("agent_consent")
+        manifest = consent.get("outbound_manifest")
+        manifest_sha = consent.get("subject_sha256")
+        if (
+            not isinstance(manifest, Mapping)
+            or not isinstance(manifest_sha, str)
+            or manifest.get("operation") != operation
+        ):
+            raise HarnessError(
+                "OUTBOUND_CONSENT_STALE",
+                "Active outbound consent does not match the guided operation",
+                exit_code=5,
+            )
+        self.console.write(self._t("openai.retry_intro"))
+        self._show_openai_manifest(manifest, manifest_sha)
+        return self._choice(
+            self._t("prompt.choice"),
+            (
+                PromptChoice("retry", self._t("openai.retry")),
+                PromptChoice("json", self._t("openai.local_import")),
+                PromptChoice("agent", self._t("openai.agent_import")),
+            ),
+            default="retry",
+        )
+
+    def _show_openai_manifest(
+        self,
+        manifest: Mapping[str, Any],
+        manifest_sha: str,
+    ) -> None:
+        self.console.write(self._t("openai.preview"))
+        self.console.write(self._t("openai.operation", operation=str(manifest.get("operation"))))
+        self.console.write(self._t("openai.provider", provider=str(manifest.get("provider"))))
+        self.console.write(self._t("openai.model", model=str(manifest.get("model"))))
+        self.console.write(self._t("openai.prompt_id", prompt_id=str(manifest.get("prompt_id"))))
+        self.console.write(
+            self._t(
+                "openai.prompt_fingerprint",
+                fingerprint=str(manifest.get("prompt_sha256", ""))[:12],
+            )
+        )
+        self.console.write(
+            self._t(
+                "openai.input_fingerprint",
+                fingerprint=str(manifest.get("input_sha256", ""))[:12],
+            )
+        )
+        self.console.write(
+            self._t("openai.source_bytes", bytes=str(manifest.get("source_excerpt_bytes")))
+        )
+        self.console.write(
+            self._t("openai.evidence_count", count=str(manifest.get("evidence_count")))
+        )
+        self.console.write(self._t("openai.manifest_fingerprint", fingerprint=manifest_sha[:12]))
+
+    def _run_consented_openai(self, operation: str) -> None:
+        consent = self._payload("agent_consent")
+        manifest = consent.get("outbound_manifest")
+        if not isinstance(manifest, Mapping):
+            raise HarnessError(
+                "OUTBOUND_CONSENT_STALE",
+                "Active outbound consent is missing its manifest",
+                exit_code=5,
+            )
+        provider = (
+            self.openai_provider_factory(manifest)
+            if self.openai_provider_factory is not None
+            else None
+        )
+        self._perform(
+            self.operator.run_openai_agent,
+            operation=operation,
+            provider=provider,
         )
 
     def _final_decision(self) -> None:
@@ -1281,7 +1432,7 @@ class GuidedDecisionController:
             ),
             PromptChoice(
                 "export",
-                self._bi("Viewer JSON을 내보내고 종료", "Export viewer JSON and exit"),
+                self._bi("Viewer JSON 내보내기", "Export viewer JSON"),
             ),
             PromptChoice("change", self._t("change")),
         ]
@@ -1345,7 +1496,7 @@ class GuidedDecisionController:
                 )
                 continue
             self.console.write(self._bi("Viewer export 완료.", "Viewer export complete."))
-            return True
+            return False
 
 
 def run_guided_session(
@@ -1354,6 +1505,7 @@ def run_guided_session(
     *,
     root: Path,
     language: str,
+    openai_provider_factory: OpenAIProviderFactory | None = None,
 ) -> str:
     """Run an already-created session with injectable service and console ports."""
 
@@ -1363,6 +1515,7 @@ def run_guided_session(
         console,
         root=root,
         language=language,
+        openai_provider_factory=openai_provider_factory,
     ).run()
 
 
@@ -1372,6 +1525,7 @@ def run_guided_cli(
     *,
     language: str = "ko",
     console: ConsolePort | None = None,
+    openai_provider_factory: OpenAIProviderFactory | None = None,
 ) -> int:
     """TTY entry point with stable guided exit semantics."""
 
@@ -1417,6 +1571,7 @@ def run_guided_cli(
                 actual_console,
                 root=resolved_root,
                 language=language,
+                openai_provider_factory=openai_provider_factory,
             ).run()
             in {"quit", "complete"}
             else 1

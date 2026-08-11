@@ -1,8 +1,9 @@
 # Guided Decision Operator UX 설계
 
-- 상태: Proposed
-- 대상 release: v0.5.0 후보
-- 기준 branch: `main`의 v2 decision control plane
+- 상태: Implemented
+- release: v0.5.0
+- 구현 branches: `feat/guided-decision-ux` → `feat/guided-decision-workflow` →
+  `feat/guided-decision-integrations`
 - 목표: core 안전 계약을 유지하면서 로컬 운영자의 반복 명령과 digest 복사를 제거한다.
 
 ## 1. 결론
@@ -31,24 +32,22 @@ snapshot을 메모리에 고정하고 그 full digest를 `DecisionService`에 �
 Guided interface는 core를 우회하거나 별도의 workflow 규칙을 소유하지 않는다. 모든 실제
 mutation은 계속 `DecisionService` 한 곳을 통과한다.
 
-이 판단은 다음 현재 구현을 기준으로 한다.
+구현 책임은 다음과 같이 분리했다.
 
-- [`cli.py`](../src/ai_work_harness/cli.py#L27-L54): session과 expected parent를 모든 leaf
-  command argument로 반복한다.
-- [`service.py`](../src/ai_work_harness/decision/service.py#L253-L273): 모든 mutation이 lock 안에서
-  expected parent와 active binding을 검증한다.
-- [`store.py`](../src/ai_work_harness/decision/store.py#L104-L137): current가 caller가 본 parent와
-  달라지면 `WRITE_CONFLICT`로 실패한다.
-- [`run_synthetic_decision_demo.py`](../scripts/run_synthetic_decision_demo.py#L52-L99): demo wrapper가
-  성공 응답의 parent를 이미 자동 전달한다.
-- [`service.py`](../src/ai_work_harness/decision/service.py#L2331-L2368): status가 pinned snapshot의
-  verify를 포함한다.
-- [`service.py`](../src/ai_work_harness/decision/service.py#L2385-L2408): service의 viewer export는
-  current snapshot 기본값을 이미 지원한다.
-- [`threat-model.md`](threat-model.md): 보호 대상은 실수, drift, 동시 write와 제한된 untrusted
-  input이며 로컬 actor 신원 인증은 범위 밖이다.
+- [`cli.py`](../src/ai_work_harness/cli.py): raw JSON 명령, `decision next`, TTY-only guide 진입점
+- [`guidance.py`](../src/ai_work_harness/decision/guidance.py): immutable read model과 결정적 planner
+- [`operator.py`](../src/ai_work_harness/decision/operator.py): pinned parent cursor와 full binding 전달
+- [`guided_cli.py`](../src/ai_work_harness/guided_cli.py): 한국어·영어 semantic prompt와 복구 흐름
+- [`service.py`](../src/ai_work_harness/decision/service.py): raw와 guide가 공유하는 유일한 상태 전이 권한
+- [`store.py`](../src/ai_work_harness/decision/store.py): expected-parent CAS와 `WRITE_CONFLICT`
+- [`run_synthetic_decision_demo.py`](../scripts/run_synthetic_decision_demo.py): 한 번의 guide 실행으로
+  승인, current export, criteria 변경 뒤 stale까지 재현하는 fixture demo
+- [`threat-model.md`](threat-model.md): 실수, drift, 동시 write와 제한된 untrusted input에 대한 경계
 
 ## 2. 현재 사용 경험이 복잡해진 이유
+
+이 절의 “현재”는 guided interface 도입 전인 v0.4 raw operator 경험을 뜻한다. v0.5는 아래
+문제를 raw 프로토콜을 삭제하지 않고 별도의 사람용 presentation으로 해결했다.
 
 ### 2.1 저장 프로토콜과 operator UX를 같은 interface로 취급했다
 
@@ -345,9 +344,11 @@ comparison 이후 다음 선택지를 보여준다.
 ```
 
 추천은 선택 사항이며 guide가 자동 생성하지 않는다. OpenAI를 선택하면 기존 preview →
-manifest fingerprint 확인 → consent → provider call을 같은 guided process에서 연결하되 각각의
-artifact와 snapshot은 유지한다. network call 전 provider, model, source byte count와 prompt/input
-fingerprint를 사람이 읽을 수 있게 표시한다.
+manifest fingerprint 확인 → exact `SEND OPENAI <fingerprint>` → provider call을 같은 guided
+process에서 연결하되 consent와 결과의 artifact·snapshot은 유지한다. network call 전 provider,
+model, source byte count와 prompt/input fingerprint를 사람이 읽을 수 있게 표시한다. provider가
+실패해 같은 manifest의 consent가 active라면 재개 시 재동의 없이 같은 요청을 재시도하거나,
+local JSON·기존 agent draft로 전환할 수 있다. manifest가 달라지면 새 exact phrase가 필요하다.
 
 ### 4.8 final decision을 semantic form으로 수집
 
@@ -406,8 +407,9 @@ nonce는 화면에서 복사하게 하지 않는다. challenge artifact와 commi
 - 만료됨: 기존 commit 시도 없이 새 challenge 발급 여부를 질문
 - intervening mutation 발생: challenge가 active하지 않으므로 새 상태 검토로 복귀
 
-`approved`, `rejected`, `changes_requested`마다 서로 다른 확인 동사를 사용한다. 예를 들어
-`REJECT <fingerprint>`, `REQUEST CHANGES <fingerprint>`로 disposition 혼동을 막는다.
+`approved`, `rejected`, `changes_requested`마다 서로 다른 확인 동사를 사용한다. 실제 문구는
+`APPROVE <target> <fingerprint>`, `REJECT <target> <fingerprint>`,
+`REQUEST-CHANGES <target> <fingerprint>`이며 disposition과 승인 대상을 함께 binding한다.
 
 active human approval이 있으면 같은 final decision에 새 challenge를 만들지 않는다.
 `rejected`와 `changes_requested` 뒤에는 final의 disposition, candidate, reason 또는 risk
@@ -560,9 +562,9 @@ pointer가 이미 복구에 필요한 사실을 소유한다.
 - interactive UI만 통과하는 별도 domain policy
 - 이번 첫 구현에서 TUI framework, web backend, database 또는 remote session
 
-## 10. 구현 순서
+## 10. 구현 결과
 
-### PR 1 — Planner와 core 정책 기반 (`feat/guided-decision-ux`)
+### PR 1 — Planner와 core 정책 기반 (`feat/guided-decision-ux`, 완료)
 
 - `OperatorPlan`, step enum과 pure planner
 - `decision next` JSON command
@@ -571,7 +573,7 @@ pointer가 이미 복구에 필요한 사실을 소유한다.
 - `request_revision` 기록/comparison 차단과 동일 final 재승인 금지
 - guided/raw 이중 interface ADR
 
-### PR 2 — 로컬·Fixture Guided Workflow (`feat/guided-decision-workflow`)
+### PR 2 — 로컬·Fixture Guided Workflow (`feat/guided-decision-workflow`, 완료)
 
 - injectable console port
 - `decision guide <session> [--lang ko|en]`
@@ -588,7 +590,7 @@ pointer가 이미 복구에 필요한 사실을 소유한다.
 - 만료 challenge 재개/재발급
 - ready summary와 current snapshot export
 
-### PR 3 — OpenAI·Agent 재개, 문서와 release (`feat/guided-decision-integrations`)
+### PR 3 — OpenAI·Agent 재개, 문서와 release (`feat/guided-decision-integrations`, 완료)
 
 - OpenAI preview → exact consent → run과 실패 후 재개
 - 기존 MCP draft 감지; MCP human gate allowlist는 그대로 유지
@@ -597,6 +599,11 @@ pointer가 이미 복구에 필요한 사실을 소유한다.
 - operator runbook에 raw와 guided 복구 절차 병기
 - 합성 demo transcript를 “명령 수”가 아니라 “인간 판단 지점” 중심으로 갱신
 - version `0.5.0`
+
+구현 검증은 planner table, pinned read, conflict/no-retry, semantic confirmation, immutable
+revision request, approval 재발급, OpenAI exact consent·재시도, raw/guided graph 동등성 테스트와
+clean-wheel guided smoke로 고정했다. 실행 가능한 증거는
+[portfolio evidence map](evidence-map.md)에 연결한다.
 
 ## 11. 합격 기준
 

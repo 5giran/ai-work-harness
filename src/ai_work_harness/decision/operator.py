@@ -165,6 +165,23 @@ class GuidedOperator:
         self._plan = plan
         return plan
 
+    def _validate_pinned_read(self, result: Mapping[str, Any]) -> None:
+        if result.get("ok") is not True or result.get("session_id") != self._cursor.session_id:
+            raise ValueError("guided reads must return this operator session")
+        if (
+            result.get("generation") != self._cursor.generation
+            or result.get("snapshot_sha256") != self._cursor.pinned_snapshot_sha256
+        ):
+            raise HarnessError(
+                "WRITE_CONFLICT",
+                "Current snapshot moved while the guided operator was reviewing it",
+                details={
+                    "expected": self._cursor.pinned_snapshot_sha256,
+                    "current": result.get("snapshot_sha256"),
+                },
+                exit_code=3,
+            )
+
     def mutate(
         self,
         operation: Mutation,
@@ -299,6 +316,65 @@ class GuidedOperator:
 
     def import_reviews(self, payload: Any) -> OperatorPlan:
         return self.mutate(self._service.import_reviews, payload)
+
+    def preview_agent(
+        self,
+        *,
+        operation: str,
+        provider: str = "openai",
+        model: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Preview outbound data against the operator's pinned snapshot."""
+
+        result = self._service.preview_agent(
+            operation=operation,
+            provider=provider,
+            model=model,
+        )
+        self._validate_pinned_read(result)
+        return result
+
+    def consent_agent(
+        self,
+        *,
+        operation: str,
+        preview: Mapping[str, Any],
+    ) -> OperatorPlan:
+        """Bind a reviewed preview without exposing its full digest to the user."""
+
+        self._validate_pinned_read(preview)
+        manifest = preview.get("outbound_manifest")
+        manifest_sha = preview.get("outbound_manifest_sha256")
+        if not isinstance(manifest, Mapping) or not isinstance(manifest_sha, str):
+            raise ValueError("agent preview is missing its outbound manifest binding")
+        if manifest.get("operation") != operation:
+            raise ValueError("agent preview operation does not match the consent request")
+        provider = manifest.get("provider")
+        model = manifest.get("model")
+        if not isinstance(provider, str) or not isinstance(model, str):
+            raise ValueError("agent preview provider configuration is invalid")
+        return self.mutate(
+            self._service.consent_agent,
+            operation=operation,
+            provider=provider,
+            model=model,
+            expected_manifest_sha=manifest_sha,
+            method="guided_exact_phrase",
+        )
+
+    def run_openai_agent(
+        self,
+        *,
+        operation: str,
+        provider: Any | None = None,
+    ) -> OperatorPlan:
+        """Run only the active consented request and advance on a successful commit."""
+
+        return self.mutate(
+            self._service.run_openai_agent,
+            operation=operation,
+            provider=provider,
+        )
 
     def compare(self) -> OperatorPlan:
         return self.mutate(self._service.compare)

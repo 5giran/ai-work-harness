@@ -9,10 +9,17 @@ from pathlib import Path
 import pytest
 
 from ai_work_harness.decision.canonical import sha256_bytes
+from ai_work_harness.decision.openai_provider import OpenAIProvider
+from ai_work_harness.decision.operator import GuidedOperator
 from ai_work_harness.decision.providers import FixtureProvider
 from ai_work_harness.decision.service import DecisionService
 from ai_work_harness.decision.store import DecisionStore
-from ai_work_harness.guided_cli import run_guided_cli, run_guided_session
+from ai_work_harness.errors import HarnessError
+from ai_work_harness.guided_cli import (
+    GuidedDecisionController,
+    run_guided_cli,
+    run_guided_session,
+)
 from ai_work_harness.guided_io import get_catalog
 
 Response = str | BaseException | Callable[[str], str]
@@ -136,7 +143,7 @@ def _advance(result: Mapping[str, object]) -> str:
     return snapshot_sha256
 
 
-def _build_evaluation_ready(service: DecisionService, root: Path) -> str:
+def _build_evidence_ready(service: DecisionService, root: Path) -> str:
     source_bytes = b"Rules and classical ML both keep captured data local.\n"
     source = root / f"{service.session_id}-review-source.md"
     source.write_bytes(source_bytes)
@@ -176,13 +183,85 @@ def _build_evaluation_ready(service: DecisionService, root: Path) -> str:
             expected_parent=parent,
         )
     )
-    parent = _advance(service.import_evidence(_evidence(source_bytes), expected_parent=parent))
+    return _advance(service.import_evidence(_evidence(source_bytes), expected_parent=parent))
+
+
+def _build_evaluation_ready(service: DecisionService, root: Path) -> str:
+    parent = _build_evidence_ready(service, root)
     return _advance(
         service.generate_evaluations(
             FixtureProvider().evaluation_provider(),
             expected_parent=parent,
             producer_kind="fixture",
         )
+    )
+
+
+def _build_comparison_ready(service: DecisionService, root: Path) -> str:
+    parent = _build_evaluation_ready(service, root)
+    parent = _advance(
+        service.import_reviews(
+            {
+                "reviews": [
+                    {
+                        "candidate_id": candidate_id,
+                        "criterion_id": "privacy",
+                        "outcome": "concur",
+                        "reason": "The displayed source observation supports this assessment.",
+                    }
+                    for candidate_id in ("rules", "classical-ml")
+                ]
+            },
+            expected_parent=parent,
+        )
+    )
+    return _advance(service.compare(expected_parent=parent))
+
+
+class FakeResponses:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+
+    def create(self, **request: object) -> dict[str, object]:
+        self.requests.append(request)
+        return self.response
+
+
+class FakeOpenAIClient:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.responses = FakeResponses(response)
+
+
+def _tool_response(tool_name: str, payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": "resp_guided_synthetic",
+        "output": [
+            {
+                "type": "function_call",
+                "name": tool_name,
+                "arguments": json.dumps(payload),
+            }
+        ],
+        "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+    }
+
+
+def _provider_for(
+    manifest: Mapping[str, object],
+    response: dict[str, object],
+) -> OpenAIProvider:
+    return OpenAIProvider(
+        client=FakeOpenAIClient(response),
+        model=str(manifest["model"]),
+        reasoning_effort=str(manifest["reasoning_effort"]),
+        max_tool_calls=int(manifest["max_tool_rounds"]),
+        max_output_tokens=int(manifest["max_output_tokens"]),
+        timeout_seconds=float(manifest["timeout_seconds"]),
+        max_retries=int(manifest["max_retries"]),
+        max_context_bytes=int(manifest["max_context_bytes"]),
+        max_lookup_bytes=int(manifest["max_lookup_bytes"]),
+        sleeper=lambda _seconds: None,
     )
 
 
@@ -398,6 +477,167 @@ def test_missing_session_can_be_created_then_quit_as_resumable(tmp_path: Path) -
     assert "Created decision session 'created-by-guide'." in console.transcript
     assert "Resume state: generation 0" in console.transcript
     assert not console.responses
+
+
+def test_openai_exact_phrase_mismatch_creates_no_consent_or_network_call(
+    tmp_path: Path,
+) -> None:
+    service = DecisionService(tmp_path, "openai-mismatch")
+    parent = _build_evidence_ready(service, tmp_path)
+    operator = GuidedOperator(service)
+    called = False
+
+    def forbidden_factory(_manifest: Mapping[str, object]) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("provider must not be created before exact consent")
+
+    console = ScriptedConsole(["SEND OPENAI wrong"])
+    controller = GuidedDecisionController(
+        operator,
+        console,
+        root=tmp_path,
+        language="en",
+        openai_provider_factory=forbidden_factory,
+    )
+
+    controller._fresh_openai("evaluations")
+
+    assert called is False
+    assert service.status()["snapshot_sha256"] == parent
+    assert "agent_consent" not in service.status()["refs"]
+    assert "nothing was sent" in console.transcript
+
+
+def test_guided_openai_evaluation_uses_separate_consent_and_result_snapshots(
+    tmp_path: Path,
+) -> None:
+    service = DecisionService(tmp_path, "openai-guided-evaluation")
+    _build_evidence_ready(service, tmp_path)
+    operator = GuidedOperator(service)
+    input_context = service._decision_context()
+    payload = FixtureProvider().generate_evaluations(input_context).as_payload()
+    preview = operator.preview_agent(operation="evaluations")
+    manifest_sha = str(preview["outbound_manifest_sha256"])
+    console = ScriptedConsole([f"SEND OPENAI {manifest_sha[:12]}"])
+    providers: list[OpenAIProvider] = []
+
+    def provider_factory(manifest: Mapping[str, object]) -> OpenAIProvider:
+        provider = _provider_for(
+            manifest,
+            _tool_response("submit_evaluations", payload),
+        )
+        providers.append(provider)
+        return provider
+
+    controller = GuidedDecisionController(
+        operator,
+        console,
+        root=tmp_path,
+        language="en",
+        openai_provider_factory=provider_factory,
+    )
+    initial = operator.cursor
+
+    controller._fresh_openai("evaluations")
+
+    assert operator.cursor.generation == initial.generation + 2
+    assert operator.plan.stage.value == "review"
+    assert operator.plan.summary["producers"]["evaluation_set"] == "openai"
+    assert "agent_consent" not in operator.state.refs
+    assert "agent_run" in operator.state.refs
+    run_artifact = service.store.read_artifact(operator.state.refs["agent_run"])
+    consent_sha = run_artifact.parents["agent_consent"]
+    consent = service.store.read_artifact(consent_sha)
+    assert consent.payload["method"] == "guided_exact_phrase"
+    assert consent.payload["subject_sha256"] == manifest_sha
+    assert len(providers[0]._client.responses.requests) == 1
+    assert manifest_sha not in console.transcript
+    assert str(preview["outbound_manifest"]["source_sha256s"]) not in console.transcript
+
+
+def test_failed_guided_openai_run_reuses_active_consent_without_new_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = DecisionService(tmp_path, "openai-guided-retry")
+    _build_evidence_ready(service, tmp_path)
+    operator = GuidedOperator(service)
+    payload = FixtureProvider().generate_evaluations(service._decision_context()).as_payload()
+    preview = operator.preview_agent(operation="evaluations")
+    manifest_sha = str(preview["outbound_manifest_sha256"])
+    refusal = {
+        "id": "resp_guided_refusal",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "refusal", "refusal": "Synthetic refusal."}],
+            }
+        ],
+    }
+    failing = GuidedDecisionController(
+        operator,
+        ScriptedConsole([f"SEND OPENAI {manifest_sha[:12]}"]),
+        root=tmp_path,
+        language="en",
+        openai_provider_factory=lambda manifest: _provider_for(manifest, refusal),
+    )
+
+    with pytest.raises(HarnessError) as caught:
+        failing._fresh_openai("evaluations")
+
+    assert caught.value.code == "MODEL_REFUSAL"
+    consent_cursor = operator.cursor
+    consent_sha = operator.state.refs["agent_consent"]
+    assert operator.plan.recommended_action.value == "retry_evaluations"
+
+    def preview_must_not_run(**_kwargs: object) -> dict[str, object]:
+        raise AssertionError("active consent retry must not recalculate preview")
+
+    monkeypatch.setattr(service, "preview_agent", preview_must_not_run)
+    retry = GuidedDecisionController(
+        operator,
+        ScriptedConsole(["retry"]),
+        root=tmp_path,
+        language="en",
+        openai_provider_factory=lambda manifest: _provider_for(
+            manifest,
+            _tool_response("submit_evaluations", payload),
+        ),
+    )
+
+    retry._edit_evaluations()
+
+    assert operator.cursor.generation == consent_cursor.generation + 1
+    run = service.store.read_artifact(operator.state.refs["agent_run"])
+    assert run.parents["agent_consent"] == consent_sha
+    assert "agent_consent" not in operator.state.refs
+
+
+def test_guided_openai_recommendation_returns_to_human_final_decision(
+    tmp_path: Path,
+) -> None:
+    service = DecisionService(tmp_path, "openai-guided-recommendation")
+    _build_comparison_ready(service, tmp_path)
+    operator = GuidedOperator(service)
+    payload = FixtureProvider().generate_recommendation(service._decision_context()).as_payload()
+    preview = operator.preview_agent(operation="recommendation")
+    fingerprint = str(preview["outbound_manifest_sha256"])[:12]
+    controller = GuidedDecisionController(
+        operator,
+        ScriptedConsole([f"SEND OPENAI {fingerprint}"]),
+        root=tmp_path,
+        language="en",
+        openai_provider_factory=lambda manifest: _provider_for(
+            manifest,
+            _tool_response("submit_recommendation", payload),
+        ),
+    )
+
+    controller._fresh_openai("recommendation")
+
+    assert operator.plan.stage.value == "final_decision"
+    assert operator.plan.summary["producers"]["recommendation"] == "openai"
 
 
 @pytest.mark.parametrize(
@@ -963,6 +1203,7 @@ def test_fixture_workflow_reaches_approved_ready_in_one_controller_invocation(
             "no",  # preserve the approved bundle
             "export",
             str(export_path),
+            "finish",  # export returns to the terminal menu
         ]
     )
 

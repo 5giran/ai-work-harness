@@ -39,6 +39,13 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-fail-under=90
+      - name: One-invocation guided fixture demo
+        if: matrix.python-version == '3.12'
+        run: |
+          python scripts/run_synthetic_decision_demo.py \
+            --root "$RUNNER_TEMP/ai-work-harness-guided-demo" \
+            --test-operator \
+            --lang en
       - name: Build sdist and wheel
         run: python -m build
       - name: Clean-wheel CLI and resource smoke

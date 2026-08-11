@@ -310,6 +310,16 @@ def test_active_outbound_consent_prioritizes_retry_then_local_progression() -> N
         OperatorAction.RECORD_FINAL_DECISION,
     )
 
+    after_final = plan_operator_next(
+        _state(
+            (*evidence_refs, "evaluation_set", "comparison", "final_decision"),
+            outbound_operation="recommendation",
+        ),
+        observed_at=OBSERVED_AT,
+    )
+    assert after_final.stage is OperatorStage.RECOMMENDATION
+    assert after_final.recommended_action is OperatorAction.RETRY_RECOMMENDATION
+
 
 def test_pending_reviews_are_stable_and_revision_stops_comparison() -> None:
     artifacts = _base_artifacts()

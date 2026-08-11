@@ -271,6 +271,35 @@ def test_guided_challenge_and_commit_use_separate_secret_bound_snapshots(
     assert operator.state.active_challenge is None
 
 
+def test_guided_outbound_preview_and_exact_consent_keep_full_binding_internal(
+    tmp_path: Path,
+) -> None:
+    service, operator = _build_operator_with_final_decision(tmp_path)
+    before = operator.cursor
+
+    preview = operator.preview_agent(operation="recommendation")
+
+    assert operator.cursor == before
+    consent_plan = operator.consent_agent(operation="recommendation", preview=preview)
+    assert operator.cursor.generation == before.generation + 1
+    assert consent_plan.recommended_action == "retry_recommendation"
+    consent = operator.semantic_payload("agent_consent")
+    assert consent is not None
+    assert consent["method"] == "guided_exact_phrase"
+    public = json.dumps(operator.public_plan(), sort_keys=True)
+    assert consent["subject_sha256"] not in public
+    assert consent["outbound_manifest"]["input_sha256"] not in public
+
+    with pytest.raises(HarnessError) as invalid_method:
+        service.consent_agent(
+            operation="recommendation",
+            expected_manifest_sha=str(preview["outbound_manifest_sha256"]),
+            expected_parent=operator.cursor.pinned_snapshot_sha256,
+            method="guided_semantic_review",
+        )
+    assert invalid_method.value.code == "INVALID_CONFIRMATION_METHOD"
+
+
 def test_write_conflict_preserves_pinned_cursor_until_explicit_reload(
     tmp_path: Path,
 ) -> None:

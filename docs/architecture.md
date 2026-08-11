@@ -2,7 +2,7 @@
 
 ## 목적과 경계
 
-v2는 로컬 단일 운영자가 증거에 묶인 의사결정을 진행하는 control plane이다. AI 모델은
+v0.5의 v2는 로컬 단일 운영자가 증거에 묶인 의사결정을 진행하는 control plane이다. AI 모델은
 평가·추천 초안을 만들 수 있지만 confirmation, review, final decision, approval을 수행할
 수 없다. legacy v1의 routing 구현은 `project.py`에 그대로 남고, v2는
 `ai_work_harness.decision` namespace와 `schemas/v2`에 분리된다.
@@ -24,6 +24,31 @@ flowchart TD
     M["Upstream artifact changes"] --> N["Remove downstream active refs + stale reasons"]
 ```
 
+## Guided와 raw 인터페이스
+
+v0.5는 같은 v2 core 위에 두 인터페이스를 유지한다. `decision guide <session-id>`는 로컬
+사람을 위한 resumable line-oriented TTY이고, 나머지 `decision ...` subcommand는 자동화와
+forensic 운영을 위한 raw JSON protocol이다. stdio MCP는 source/status read, draft mutation,
+deterministic comparison, recommendation record와 verify만 공개하고 인간 gate를 제외한 더
+좁은 allowlist다.
+
+```mermaid
+flowchart TD
+    G["Guided TTY"] --> O["GuidedOperator · pinned cursor"]
+    O --> P["Pure next-step planner"]
+    O --> S["DecisionService"]
+    R["Raw v2 CLI"] --> S
+    M["stdio MCP · no human gates"] --> S
+    S --> C["CAS · snapshots · current pointer"]
+```
+
+guide는 snapshot SHA, artifact digest, challenge secret과 full outbound manifest digest의 전달을
+담당하지만 core gate를 생략하지 않는다. raw mutation은 계속 full `expected_parent`와 작업별
+digest/challenge 값을 요구한다. 두 경로는 같은 schema, validation, stale graph와 service
+transition을 사용하므로 활성 semantic payload와 ref graph가 동등하다. 다만 raw의
+`digest_challenge`와 guided 전용 confirmation method가 artifact payload에 기록되므로
+confirmation 이후 object/snapshot digest 자체가 같을 필요는 없다.
+
 ## 구성 요소
 
 - `decision/canonical.py`: strict I-JSON parsing, RFC 8785 JCS, SHA-256.
@@ -31,11 +56,32 @@ flowchart TD
   expected-parent compare-and-swap, doctor/verify.
 - `decision/domain.py`: candidate/criteria/evidence/evaluation/review/final-decision policy.
 - `decision/service.py`: 유일한 workflow transition service와 stale dependency graph.
+- `decision/guidance.py`: 검증된 immutable state를 semantic stage와 다음 action으로 바꾸는
+  side-effect 없는 planner.
+- `decision/operator.py`: 사용자가 실제로 본 generation/snapshot을 고정하고 service 호출에
+  full `expected_parent`를 주입하는 guided adapter.
+- `guided_cli.py`, `guided_io.py`: 한국어/영어 TTY rendering, 입력 재시도와 resumable navigation.
 - `decision/providers.py`: 저장소를 모르는 frozen provider port와 deterministic fixture.
 - `decision/openai_provider.py`: 선택적인 Responses API draft adapter.
 - `decision/mcp_server.py`: closed schema와 정확한 public tool allowlist를 가진 stdio surface.
 - `decision/migration.py`: v1을 수정하지 않는 one-way copy/report.
 - `viewer/`: export 한 파일만 읽는 offline, read-only browser UI.
+
+## Planner와 pinned state
+
+guided session은 시작 또는 명시적 reload 때 `current.json`을 한 번 읽고 그 digest를 끝까지
+검증해 immutable `ValidatedOperatorState`와 `OperatorCursor`를 만든다. planner는 저장소를
+읽거나 쓰지 않고 이 state와 명시적인 `observed_at`만 받아 `operator-plan.v1`을 계산한다.
+public plan에는 stage, recommended/available action, pending review, final constraint와 sanitized
+challenge 상태만 있으며 nonce, challenge ID, full bundle digest 같은 commit binding은
+`GuidedOperator` 내부에만 남는다.
+
+모든 guided mutation은 cursor의 pinned digest를 `expected_parent`로 한 번만 제출한다.
+내용이 같은 deterministic no-op은 같은 generation/digest를 유지하고, 그 밖의 성공은 정확히
+한 generation을 전진한 뒤 새 state를 다시 검증한다. `WRITE_CONFLICT`가 나면 controller는
+pinned/current fingerprint를 보여주고 reload 여부를 묻는다. reload는 새 plan을 보여주기만
+하며 실패한 mutation을 자동 retry, replay 또는 rebase하지 않는다. 거부하면 conflict exit
+`3`으로 종료되어 기존 pinned 검토 경계를 보존한다.
 
 ## Write protocol
 

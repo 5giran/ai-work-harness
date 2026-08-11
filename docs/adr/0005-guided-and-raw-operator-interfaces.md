@@ -36,8 +36,12 @@ only in the trusted in-process read model.
 
 Human gates remain separate artifacts and snapshots. Guided frame, candidate, and criteria
 confirmations use the additive `guided_semantic_review` method; existing raw confirmations retain
-`digest_challenge`. OpenAI consent and final approval still require exact, meaning-bearing phrases.
-MCP and providers receive no confirmation, review, final-decision, challenge, or approval authority.
+`digest_challenge`. Guided OpenAI consent uses the additive `guided_exact_phrase` method and requires
+`SEND OPENAI <manifest-fingerprint>` before the first external request. A failed provider run may resume
+from the still-active consent only when its stored full manifest is unchanged; a different manifest
+requires a new consent. Final approval likewise requires a disposition-, target-, and bundle-bearing
+phrase. MCP and providers receive no confirmation, review, final-decision, challenge, or approval
+authority.
 
 ## Alternatives considered
 
@@ -57,3 +61,9 @@ precise, backward-compatible protocol. The project owns two presentations but on
 authority: `DecisionService`. Planner and service must share pure review and risk policy helpers so the
 guide cannot promise an action the core later interprets differently.
 
+## Implementation note
+
+Implemented in v0.5.0 across `feat/guided-decision-ux`, `feat/guided-decision-workflow`, and
+`feat/guided-decision-integrations`. The additive confirmation methods keep the artifact envelope at
+schema version `2.0`, so existing v0.4 sessions verify without migration. Raw commands retain their
+original arguments and `digest_challenge` behavior.

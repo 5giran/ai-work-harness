@@ -901,7 +901,13 @@ class DecisionService:
         expected_parent: str,
         provider: str = "openai",
         model: str | None = None,
+        method: str = "digest_challenge",
     ) -> dict[str, Any]:
+        if method not in {"digest_challenge", "guided_exact_phrase"}:
+            raise HarnessError(
+                "INVALID_CONFIRMATION_METHOD",
+                "Unknown outbound consent method",
+            )
         current = self._current()
         if _snapshot_sha(current) != expected_parent:
             raise HarnessError(
@@ -942,7 +948,7 @@ class DecisionService:
             "subject_sha256": manifest_sha,
             "actor_label": "local_operator",
             "identity_verified": False,
-            "method": "digest_challenge",
+            "method": method,
             "confirmed_at": _timestamp(self.clock()),
             "outbound_manifest": manifest,
         }
@@ -2059,6 +2065,7 @@ class DecisionService:
             manifest = payload.get("outbound_manifest")
             if (
                 payload.get("subject_type") != "outbound-manifest"
+                or payload.get("method") not in {"digest_challenge", "guided_exact_phrase"}
                 or not isinstance(manifest, dict)
                 or digest_json(manifest) != payload.get("subject_sha256")
             ):
