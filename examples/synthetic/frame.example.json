@@ -1,0 +1,8 @@
+{
+  "agreed_frame": "Produce a local batch artifact without external access.",
+  "ai_interpretation": "A deterministic batch transformation is sufficient.",
+  "input_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "schema_version": 1,
+  "user_confirmed": true,
+  "user_statement": "Group the local records into a reviewable output."
+}

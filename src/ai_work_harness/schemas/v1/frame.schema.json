@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v1:frame",
+  "title": "Human and AI frame v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "input_manifest_sha256",
+    "user_statement",
+    "ai_interpretation",
+    "user_confirmed",
+    "agreed_frame"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "input_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "user_statement": {"type": "string", "minLength": 1},
+    "ai_interpretation": {"type": "string", "minLength": 1},
+    "user_confirmed": {"type": "boolean"},
+    "agreed_frame": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
