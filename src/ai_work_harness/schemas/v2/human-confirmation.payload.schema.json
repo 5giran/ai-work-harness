@@ -21,7 +21,7 @@
     "subject_sha256": {"$ref": "#/$defs/sha256"},
     "actor_label": {"const": "local_operator"},
     "identity_verified": {"const": false},
-    "method": {"const": "digest_challenge"},
+    "method": {"enum": ["digest_challenge", "guided_semantic_review"]},
     "confirmed_at": {"$ref": "#/$defs/timestamp"},
     "outbound_manifest": {"$ref": "#/$defs/outbound-manifest"}
   },

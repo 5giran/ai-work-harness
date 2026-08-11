@@ -323,6 +323,178 @@ def test_upstream_change_removes_approval_and_reports_stale_reason(tmp_path: Pat
     assert status["stale_reasons"] == ["criteria_set_changed"]
 
 
+def test_guided_confirmation_method_is_additive_and_raw_default_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.md"
+    source.write_text("Synthetic source.\n", encoding="utf-8")
+    service = _service(tmp_path)
+    parent = _advance(service.initialize())
+    parent = _advance(
+        service.capture_source(
+            source_id="source",
+            source=source,
+            expected_parent=parent,
+        )
+    )
+    parent = _advance(
+        service.import_frame(
+            {
+                "user_statement_verbatim": "A decision is blocked.",
+                "ai_initial_interpretation": "Compare the available approaches.",
+                "business_user": "Operator",
+                "blocked_decision": "Choose an approach",
+                "problem_statement": "Choose one reviewed approach.",
+                "scope_in": [],
+                "scope_out": [],
+                "assumptions": [],
+                "open_questions": [],
+            },
+            expected_parent=parent,
+        )
+    )
+    frame_sha = service.status()["refs"]["decision_frame"]
+    guided = service.confirm(
+        "decision-frame",
+        expected_artifact_sha=frame_sha,
+        expected_parent=parent,
+        method="guided_semantic_review",
+    )
+    confirmation_sha = service.status()["refs"]["frame_confirmation"]
+    assert service.store.read_artifact(confirmation_sha).payload["method"] == (
+        "guided_semantic_review"
+    )
+
+    # Re-importing a changed frame clears the confirmation; raw callers retain
+    # their historical digest-challenge method without opting in to guided UX.
+    changed_parent = _advance(
+        service.import_frame(
+            {
+                "user_statement_verbatim": "A decision is blocked.",
+                "ai_initial_interpretation": "Compare the available approaches.",
+                "business_user": "Operator",
+                "blocked_decision": "Choose a revised approach",
+                "problem_statement": "Choose one reviewed approach.",
+                "scope_in": [],
+                "scope_out": [],
+                "assumptions": [],
+                "open_questions": [],
+            },
+            expected_parent=guided["snapshot_sha256"],
+        )
+    )
+    changed_frame_sha = service.status()["refs"]["decision_frame"]
+    service.confirm(
+        "decision-frame",
+        expected_artifact_sha=changed_frame_sha,
+        expected_parent=changed_parent,
+    )
+    raw_confirmation_sha = service.status()["refs"]["frame_confirmation"]
+    assert service.store.read_artifact(raw_confirmation_sha).payload["method"] == (
+        "digest_challenge"
+    )
+
+
+def test_same_final_and_active_approval_cannot_be_rechallenged(tmp_path: Path) -> None:
+    source = tmp_path / "triage.md"
+    source.write_text("Synthetic triage evidence for every configured fixture cell.\n")
+    service = _service(tmp_path)
+    approved = _build_approved_demo(service, source)
+    approved_parent = str(approved["snapshot_sha256"])
+    refs = service.status()["refs"]
+    final = dict(service.store.read_artifact(refs["final_decision"]).payload)
+
+    with pytest.raises(HarnessError) as duplicate_challenge:
+        service.create_approval_challenge(
+            disposition="approved",
+            expected_parent=approved_parent,
+        )
+    assert duplicate_challenge.value.code == "ACTIVE_APPROVAL_EXISTS"
+    assert service.status()["snapshot_sha256"] == approved_parent
+
+    with pytest.raises(HarnessError) as unchanged:
+        service.import_final_decision(
+            {
+                "disposition": final["disposition"],
+                "candidate_id": final["candidate_id"],
+                "reason": f"  {final['reason']}  ",
+                "risk_acknowledgements": list(reversed(final["risk_acknowledgements"])),
+            },
+            expected_parent=approved_parent,
+        )
+    assert unchanged.value.code == "FINAL_DECISION_UNCHANGED"
+    assert service.status()["snapshot_sha256"] == approved_parent
+
+    changed = service.import_final_decision(
+        {
+            "disposition": final["disposition"],
+            "candidate_id": final["candidate_id"],
+            "reason": "The operator revised the rationale after reviewing the rejection.",
+            "risk_acknowledgements": list(final["risk_acknowledgements"]),
+        },
+        expected_parent=approved_parent,
+    )
+    changed_refs = service.status()["refs"]
+    assert "human_approval" not in changed_refs
+    challenge = service.create_approval_challenge(
+        disposition="approved",
+        expected_parent=str(changed["snapshot_sha256"]),
+    )
+    assert challenge["challenge_id"]
+
+
+def test_revision_request_is_recorded_and_requires_a_new_evaluation(tmp_path: Path) -> None:
+    source = tmp_path / "triage.md"
+    source.write_text("Synthetic triage evidence for every configured fixture cell.\n")
+    service = _service(tmp_path)
+    approved = _build_approved_demo(service, source)
+    refs = service.status()["refs"]
+    evaluation = json.loads(
+        json.dumps(service.store.read_artifact(refs["evaluation_set"]).to_document()["payload"])
+    )
+    evaluation["cells"][0]["rationale"] = "A revised fixture rationale requiring review."
+    revised = service.import_evaluations(
+        evaluation,
+        expected_parent=str(approved["snapshot_sha256"]),
+        producer_kind="fixture",
+    )
+
+    requested = service.import_reviews(
+        {
+            "reviews": [
+                {
+                    "candidate_id": evaluation["cells"][0]["candidate_id"],
+                    "criterion_id": evaluation["cells"][0]["criterion_id"],
+                    "outcome": "request_revision",
+                    "reason": "The cited rationale needs a new evaluation draft.",
+                }
+            ]
+        },
+        expected_parent=str(revised["snapshot_sha256"]),
+    )
+    requested_parent = str(requested["snapshot_sha256"])
+    assert "evaluation_review_set" in service.status()["refs"]
+
+    with pytest.raises(HarnessError) as comparison_error:
+        service.compare(expected_parent=requested_parent)
+    assert comparison_error.value.code == "EVALUATION_REVISION_REQUIRED"
+    assert service.status()["snapshot_sha256"] == requested_parent
+
+    with pytest.raises(HarnessError) as overwrite_error:
+        service.import_reviews(_reviews(), expected_parent=requested_parent)
+    assert overwrite_error.value.code == "EVALUATION_REVISION_REQUIRED"
+    assert service.status()["snapshot_sha256"] == requested_parent
+
+    evaluation["cells"][0]["rationale"] = "The requested revision is now addressed."
+    new_evaluation = service.import_evaluations(
+        evaluation,
+        expected_parent=requested_parent,
+        producer_kind="fixture",
+    )
+    assert "evaluation_review_set" not in service.status()["refs"]
+    assert new_evaluation["snapshot_sha256"] != requested_parent
+
+
 def test_view_export_preserves_artifact_digests_and_opt_in_excerpts(tmp_path: Path) -> None:
     source = tmp_path / "triage.md"
     source.write_text("Synthetic triage evidence for every configured fixture cell.\n")
@@ -512,9 +684,26 @@ def test_approval_challenge_cannot_be_replayed_after_commit(tmp_path: Path) -> N
     assert replay.value.code == "CHALLENGE_STALE"
     assert service.verify(approved["snapshot_sha256"])["verified"] is True
 
+    with pytest.raises(HarnessError) as duplicate:
+        service.create_approval_challenge(
+            disposition="approved",
+            expected_parent=approved["snapshot_sha256"],
+        )
+    assert duplicate.value.code == "ACTIVE_APPROVAL_EXISTS"
+
+    final = service.store.read_artifact(refs["final_decision"]).to_document()["payload"]
+    changed = service.import_final_decision(
+        {
+            "disposition": final["disposition"],
+            "candidate_id": final["candidate_id"],
+            "reason": "A changed rationale permits a fresh approval cycle.",
+            "risk_acknowledgements": final["risk_acknowledgements"],
+        },
+        expected_parent=approved["snapshot_sha256"],
+    )
     replacement = service.create_approval_challenge(
         disposition="approved",
-        expected_parent=approved["snapshot_sha256"],
+        expected_parent=changed["snapshot_sha256"],
     )
     assert isinstance(service.clock, MutableClock)
     service.clock.advance(timedelta(minutes=10))

@@ -217,6 +217,12 @@ def _build_decision_parser(commands: Any) -> None:
         operation="decision status",
         help="Report the current pinned v2 decision state",
     )
+    _decision_leaf(
+        decision_commands,
+        "next",
+        operation="decision next",
+        help="Return the verified next-action plan for an operator or UI",
+    )
     decision_verify = _decision_leaf(
         decision_commands,
         "verify",
@@ -281,7 +287,10 @@ def _build_decision_parser(commands: Any) -> None:
         operation="decision export-view",
         help="Export a self-contained read-only decision view",
     )
-    export_view.add_argument("--snapshot", required=True)
+    export_view.add_argument(
+        "--snapshot",
+        help="Snapshot to export. Defaults to the verified current snapshot.",
+    )
     export_view.add_argument("--output", required=True, type=Path)
     export_view.add_argument(
         "--include-cited-excerpts",
@@ -535,6 +544,8 @@ def _execute_decision(args: argparse.Namespace, service: Any) -> dict[str, Any]:
         )
     if operation == "decision status":
         return service.status()
+    if operation == "decision next":
+        return service.operator_plan()
     if operation == "decision verify":
         return service.verify(args.snapshot)
     if operation == "decision doctor":
