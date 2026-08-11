@@ -1,0 +1,45 @@
+name: manual-openai-live-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model bound into the outbound manifest
+        required: true
+        default: gpt-5.6-luna
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-live-smoke:
+    name: One consent-bound synthetic evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: openai-live-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the OpenAI adapter
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install '.[openai]'
+          python -m pip check
+      - name: Require the protected environment credential
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: test -n "$OPENAI_API_KEY"
+      - name: Run one synthetic draft generation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_WORK_HARNESS_OPENAI_MODEL: ${{ inputs.model }}
+        run: |
+          python scripts/run_synthetic_decision_demo.py \
+            --cli ai-work-harness \
+            --root "$RUNNER_TEMP/ai-work-harness-live-smoke" \
+            --test-operator \
+            --evaluation-provider openai

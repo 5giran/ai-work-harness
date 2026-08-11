@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:evidence-set",
+  "title": "Evidence set payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["evidence"],
+  "properties": {
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_id", "claim", "provenance", "source"],
+        "properties": {
+          "evidence_id": {"$ref": "#/$defs/id"},
+          "claim": {"$ref": "#/$defs/text"},
+          "provenance": {
+            "enum": ["source_observation", "user_assertion", "agent_inference"]
+          },
+          "source": {
+            "oneOf": [{"type": "null"}, {"$ref": "#/$defs/source-locator"}]
+          },
+          "notes": {"type": "string"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"provenance": {"const": "source_observation"}}},
+            "then": {"properties": {"source": {"$ref": "#/$defs/source-locator"}}},
+            "else": {"properties": {"source": {"type": "null"}}}
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "text": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source-locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "start_line", "end_line", "excerpt_sha256"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/id"},
+        "start_line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "excerpt_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

@@ -1,143 +1,244 @@
-# ai-work-harness
+# AI Work Harness
 
-[한국어](README.md) | [English](README.en.md)
+[![CI](https://github.com/5giran/ai-work-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/5giran/ai-work-harness/actions/workflows/ci.yml)
 
-사람의 명시적 승인을 거치는 Python 기반 AI 빌드 하네스 프로토타입
+**AI가 사람이 확정한 문제·후보·기준과 출처가 있는 근거 안에서만 평가와 추천을 만들게
+하는 로컬 의사결정 control plane**
 
-`ai-work-harness`는 빌드 결정을 승인하기 전에 다음과 같은 로컬 산출물의 흐름을
-기록합니다.
+AI Work Harness는 AI가 결정을 대신하게 하지 않는다. AI는 초안을 만들고, 사람은 문제를
+확인하고 평가를 검토하며 최종 결정을 승인한다. 모든 단계는 불변 snapshot에 연결되어
+입력이나 기준이 바뀌면 이전 결정과 승인이 정확한 이유와 함께 stale 처리된다.
 
-1. 로컬 입력을 관리 저장소로 복사하고 콘텐츠 해시를 기록합니다.
-2. 사용자의 원문과 AI의 해석을 분리해 보관합니다.
-3. 합의된 작업 정의(frame)에 사용자의 명시적 확인을 요구합니다.
-4. 제한된 레지스트리에서 하나의 결정적 경로(route)를 선택합니다.
-5. 입력, frame, profile, route, 결정과 사유를 하나의 승인 기록으로 묶습니다.
+[빠른 시작](#빠른-시작) · [사용법](#사용법) · [아키텍처](#아키텍처) ·
+[검증 근거](#검증) · [프로젝트 이야기](docs/project-story.md)
 
-이전 승인 기록은 삭제하지 않고 보존합니다. `status`는 현재 파일을 기준으로 각
-승인의 유효성을 다시 계산하고, 승인이 현재 산출물과 일치하지 않는 stale 상태라면
-그 이유를 알려 줍니다.
+> 현재 버전은 `0.4.0` alpha다. 로컬 단일 운영자를 위한 도구이며 인증 시스템, 서명 원장,
+> 원격 서비스 또는 production-ready 플랫폼을 주장하지 않는다.
 
-## 범위와 한계
+## 프로젝트 소개
 
-이 저장소는 로컬 산출물 기록, 결정적 경로 선택(routing), 승인 정보 연결(binding)
-흐름만 구현합니다.
-모델 호출, 생성된 작업의 실행, 사용자 신원 확인, 변경 불가능한 승인 기록,
-원격 서비스 연동은 구현 범위에 포함하지 않습니다. 해시는 일반적인 로컬 변경을
-감지하지만, 모든 산출물을 다시 쓸 수 있는 사용자는 해시도 다시 계산할 수 있습니다.
+### 해결하는 문제
 
-현재 등록된 route는 두 개뿐입니다.
+AI는 유용하지만, 실제 결정에서는 다음 질문이 남는다.
 
-| 입력 소스 | 로컬 modality | capability 묶음 | Route |
-|---|---|---|---|
-| `local_files` | `text`, `json`, `csv` 중 하나 이상의 조합 | `transform`, `aggregate`, `rank` 중 하나 이상의 조합 | `batch_pipeline` |
-| `local_files` | `text`, `json`, `csv` 중 하나 이상의 조합 | `validate`, `apply_rules` 중 하나 이상의 조합 | `rule_decision` |
+- 무엇을 해결하려 했고 누가 그 문제 정의를 확인했는가?
+- 어떤 후보를 어떤 기준과 근거로 비교했는가?
+- AI 추천과 사람이 선택한 결과가 왜 달랐는가?
+- 입력·기준·평가가 바뀐 뒤에도 이전 승인을 신뢰할 수 있는가?
 
-네트워크, live API, retrieval, multimodal, 미등록 경로, 서로 다른 capability 묶음을
-혼합한 경로는 구조화된 오류와 0이 아닌 종료 코드를 반환하며 안전하게 거부됩니다.
+AI Work Harness는 이 질문을 파일 관례가 아니라 schema, state transition과 verifier로
+강제한다. 고객지원 운영 방식, 모델 도입, 내부 도구 선택처럼 **AI의 도움은 필요하지만
+결정 책임은 사람이 가져야 하는 비교·검토 업무**가 대상이다.
 
-## 설치
+### 핵심 보장
 
-Python 3.11과 3.12를 지원합니다.
+| 경계 | 구현된 통제 |
+|---|---|
+| 인간 권한 | frame·후보·기준 확인, Must/High 검토, 최종 결정과 승인을 별도 event로 기록 |
+| AI 권한 | provider와 MCP는 평가·추천 draft만 생성하고 인간 gate에는 접근하지 못함 |
+| 근거 | source bytes와 locator를 SHA-256으로 묶고 추론·사용자 주장을 사실 근거와 구분 |
+| 변경 감지 | upstream 변경 시 downstream 활성 참조를 제거하고 stale reason을 기록 |
+| 동시 쓰기 | full expected-parent, 5초 writer lock과 atomic pointer replace 사용 |
+| 승인 | bundle digest, snapshot, nonce와 만료 시각을 challenge에 binding |
+| readiness | 승인된 `select`와 동일 pinned snapshot의 전체 검증이 모두 성공할 때만 `ready=true` |
+
+### 배경
+
+이 프로젝트는 [2026 Cofathon](https://cofathon.getcofa.com/)을 위해 만든 문제 적응형
+하네스에서 시작했다. 초기 v1은 낯선 과제에서 성급한 구현을 막기 위해 원문 캡처, 문제
+프레임 확인, 실행 경로 승인을 강제했다. 행사 후 이 아이디어를 일반 업무로 확장하면서
+중심을 “어떤 실행 경로를 고를까”에서 “사람과 AI가 내린 결정을 어떻게 재검증할까”로
+바꿨다.
+
+v1에서 발견한 한계, v2로 일반화한 이유와
+포트폴리오 주장의 경계는 [프로젝트 이야기](docs/project-story.md)에 정리했다.
+
+### 기술 구성
+
+- Python 3.11/3.12, frozen dataclass, JSON Schema Draft 2020-12
+- RFC 8785 JCS, SHA-256 content-addressed storage
+- 선택적 OpenAI Responses API adapter와 공식 Python SDK 기반 stdio MCP
+- Vite, Vanilla TypeScript, Ajv, Playwright 기반 오프라인 viewer
+
+## 빠른 시작
+
+### 요구 사항
+
+- Python 3.11 또는 3.12
+- 합성 fixture 데모에는 API key와 네트워크가 필요하지 않음
+
+### 설치
 
 ```bash
+git clone https://github.com/5giran/ai-work-harness.git
+cd ai-work-harness
 python -m venv .venv
 .venv/bin/pip install -e '.[dev]'
-.venv/bin/ai-work-harness --version
 ```
 
-## 합성 데이터로 실행해 보기
-
-저장소의 `examples/synthetic/`에는 외부 자료를 사용하지 않고 임의로 만든 작은 CSV가
-포함되어 있습니다. 아래 명령은 초기화부터 입력 캡처, 작업 정의, route 선택, 승인,
-상태 확인과 검증까지 전체 흐름을 실행합니다.
+### 10분 합성 데모
 
 ```bash
-HARNESS=".venv/bin/ai-work-harness"
-DEMO_ROOT="$(mktemp -d)"
-
-# 작업 디렉터리 초기화
-"$HARNESS" --root "$DEMO_ROOT" init
-
-# 로컬 입력을 관리 저장소로 복사하고 해시 기록
-"$HARNESS" --root "$DEMO_ROOT" capture \
-  --id records.csv \
-  --file examples/synthetic/records.csv
-
-# 사용자 요청, AI 해석과 사용자가 확인한 작업 정의 기록
-"$HARNESS" --root "$DEMO_ROOT" frame \
-  --user-statement "Group the local records into a reviewable output." \
-  --ai-interpretation "A deterministic batch transformation is sufficient." \
-  --confirmed \
-  --agreed-frame "Produce a local batch artifact without external access."
-
-# 입력 특성과 필요한 기능에 맞는 등록 경로 선택
-"$HARNESS" --root "$DEMO_ROOT" route \
-  --input-source local_files \
-  --modality csv \
-  --capability transform \
-  --capability aggregate \
-  --objective "Create a deterministic grouped artifact."
-
-# 선택한 경로를 사유와 함께 승인
-"$HARNESS" --root "$DEMO_ROOT" approve \
-  --decision "Use the batch pipeline route." \
-  --reason "The confirmed frame and local input match the registered route."
-
-# 현재 승인 상태 확인과 전체 산출물 검증
-"$HARNESS" --root "$DEMO_ROOT" status
-"$HARNESS" --root "$DEMO_ROOT" verify
+.venv/bin/python scripts/run_synthetic_decision_demo.py \
+  --cli .venv/bin/ai-work-harness
 ```
 
-모든 명령 결과는 JSON으로 출력됩니다. 정상적으로 예상된 workflow 실패도 JSON으로
-표현되어 stderr에 기록되며 종료 코드 `2`를 반환합니다.
+데모는 “소규모 한국어 고객문의 triage 운영 방식”을 비교한다.
 
-## 로컬 산출물
+- 후보: `rules`, `classical-ml`, `llm-assisted`
+- Must: privacy, auditability
+- fixture 추천: `classical-ml`
+- 인간 최종 선택: `rules`
+- 후속 criteria 변경: 기존 승인 제거와 `criteria_set_changed` 확인
 
-`init`을 실행하면 Git이 추적하지 않는 `.ai-work-harness/` 디렉터리가 생성됩니다.
+frame·후보·기준 digest와 approval challenge 값을 직접 다시 입력해야 한다. 데모가 끝나면
+승인 snapshot의 `ready=true`, 동일 snapshot의 verify 성공, 변경 후 stale 상태를 확인할 수
+있다. 자세한 절차는 [operator runbook](docs/operator-runbook.md)에 있다.
+
+## 사용법
+
+v2는 항상 `decision` namespace를 사용하며 session과 snapshot parent를 명시한다.
+
+```bash
+# session 생성
+ai-work-harness decision init --session-id <session>
+
+# 입력과 인간 확인
+ai-work-harness decision source capture ...
+ai-work-harness decision frame import|confirm ...
+ai-work-harness decision candidates import|confirm ...
+ai-work-harness decision criteria import|confirm ...
+
+# 근거, 평가와 비교
+ai-work-harness decision evidence import ...
+ai-work-harness decision evaluations import|generate|review ...
+ai-work-harness decision compare ...
+ai-work-harness decision recommend ...
+
+# 인간 결정과 승인
+ai-work-harness decision final import ...
+ai-work-harness decision approval challenge|commit ...
+
+# 운영과 검증
+ai-work-harness decision status|verify|doctor ...
+ai-work-harness decision export-view ...
+```
+
+모든 mutation은 `--expected-parent <full-snapshot-sha256>`를 요구한다. 정상 domain 결과와
+예상된 오류는 JSON envelope로 출력한다. 전체 명령과 오류 대응은
+[operator runbook](docs/operator-runbook.md)을 참고한다.
+
+### legacy v1
+
+기존 `init`, `capture`, `frame`, `route`, `approve`, `status`, `verify`는 v1 의미 그대로
+유지된다. v2는 자동 감지하지 않으며 `decision migrate-v1`도 v1 confirmation과 approval을
+v2 인간 gate로 승격하지 않는다.
+
+## 아키텍처
+
+```mermaid
+flowchart TD
+    A["Source capture"] --> B["Frame confirmation"]
+    B --> C["Candidates confirmation"]
+    C --> D["Criteria confirmation"]
+    D --> E["Evidence and evaluations"]
+    E --> F["Must / High human review"]
+    F --> G["Deterministic comparison"]
+    G --> H["Optional AI recommendation"]
+    G --> I["Human final decision"]
+    H --> I
+    I --> J["Digest-bound approval"]
+    J --> K["Pinned verify and ready"]
+    L["Upstream change"] --> M["Downstream refs removed + stale reason"]
+```
 
 ```text
-.ai-work-harness/
-├── input-manifest.json
-├── inputs/
-├── frame.json
-├── task-profile.json
-├── route.json
-└── approvals/
+.ai-work-harness/v2/
+├── objects/sha256/<prefix>/<digest>
+└── sessions/<session-id>/
+    ├── snapshots/<prefix>/<snapshot-digest>.json
+    ├── current.json
+    └── writer.lock
 ```
 
-입력 매니페스트(manifest)의 각 항목에는 다음 정보만 포함됩니다.
+artifact와 snapshot은 RFC 8785 JCS bytes의 SHA-256으로 주소화된다. `current.json`만 현재
+snapshot을 가리키며, mutation은 object와 snapshot을 fsync한 뒤 pointer를 atomic replace
+한다. crash 뒤 남은 미참조 object는 활성 상태에 영향을 주지 않고 `decision doctor`가
+보고한다.
 
-- 안전한 상대 경로 형식의 `logical_id`
-- 바이트 수
-- SHA-256 해시값
+세부 설계는 [architecture](docs/architecture.md), wire contract는
+[data contract](docs/data-contract.md), 공격 모델은 [threat model](docs/threat-model.md)에
+기록했다.
 
-매니페스트는 원본 경로, 시각 정보, 콘텐츠 미리 보기, 환경 메타데이터를 저장하지
-않습니다. 관리되는 입력 경로는 검증된 logical ID로부터 만들어집니다.
+## Provider, MCP와 Viewer
 
-승인 기록은 현재 입력 manifest, frame, task profile, route, 결정과 사유를 하나로
-묶습니다. 나중에 `capture`를 다시 실행하거나 frame/profile/route를 변경해도 이전
-기록은 남지만, 해당 승인은 stale 상태가 됩니다.
+- `FixtureProvider`는 동일 입력에 결정적인 평가·추천 payload를 생성한다.
+- OpenAI adapter는 외부 전송 전 preview와 digest-bound consent를 요구하고 성공한 run만
+  기록한다.
+- stdio MCP allowlist에는 confirm, evaluation review, final decision, challenge와 approval
+  tool이 없다.
+- viewer는 export된 `decision-view.v1.json` 한 파일만 읽으며 schema 또는 digest 검증이
+  실패하면 결정 내용을 표시하지 않는다.
 
-## 스키마와 결정적 출력
-
-버전이 지정된 JSON Schema는 `src/ai_work_harness/schemas/v1/`에 포함되어 있습니다.
-실행 중 기록되는 데이터는 JSON Schema Draft 2020-12로 검증하며, 모든 객체는 선언되지
-않은 필드를 거부합니다. 저장되는 JSON은 UTF-8, 정렬된 키, 공백 없는 구분자와
-마지막 줄바꿈을 사용합니다. route 산출물에는 시각에서 파생된 값이 없으므로, 정규화된
-입력이 같으면 항상 동일한 바이트가 생성됩니다.
-
-## 개발 검증
+선택적 integration은 다음과 같이 설치한다.
 
 ```bash
-ruff check .
-ruff format --check .
-pytest
-python -m pip wheel . --no-deps --wheel-dir dist
+.venv/bin/pip install -e '.[openai,mcp]'
 ```
 
-CI matrix는 깨끗한 checkout에서 Python 3.11과 3.12 각각에 대해 lint와 test를
-실행합니다.
+정책과 실패 처리 기준은 [provider policy](docs/provider-policy.md)에 있다. PR CI는 live
+provider를 호출하지 않는다.
+
+## 검증
+
+```bash
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/mypy src/ai_work_harness
+.venv/bin/pytest --cov=ai_work_harness --cov-report=term-missing --cov-fail-under=90
+.venv/bin/python -m build
+
+cd viewer
+npm ci
+npm test
+npm run build
+npm run test:e2e
+```
+
+CI는 Python 3.11/3.12 lint·type·coverage·clean wheel 설치와 Python 3.12의
+Ubuntu/macOS/Windows smoke를 실행한다. viewer는 Node 22에서 unit, production build와
+Playwright Chromium E2E를 검증한다.
+
+[portfolio evidence map](docs/evidence-map.md)은 다음 주장들을 직접 재현하는 테스트에
+연결한다.
+
+- writer 경쟁과 crash 지점에서도 pointer 원자성 유지
+- object·snapshot·pointer 변조 fail-closed
+- `ready=true`인 terminal snapshot의 verify 성공
+- 추천과 다른 인간 선택 허용 및 relation 기록
+- criteria 변경 후 승인 제거와 stale graph 유지
+- provider 실패 시 pointer 불변과 MCP 인간 gate 부재
+- viewer의 one-byte 변조·중복 key·네트워크 요청 거부
+
+## 문서
+
+- [프로젝트 이야기](docs/project-story.md): 코파톤용 v1에서 범용 v2로 확장한 이유
+- [Architecture](docs/architecture.md): component, write protocol, stale graph, approval cycle
+- [Data contract](docs/data-contract.md): artifact schema, ID, evidence와 evaluation 규칙
+- [Operator runbook](docs/operator-runbook.md): 설치, 표준 workflow, 장애 대응과 migration
+- [Provider policy](docs/provider-policy.md): Fixture/OpenAI/MCP 권한과 outbound consent
+- [Threat model](docs/threat-model.md): 보장하는 것과 주장하지 않는 것
+- [ADR](docs/adr/README.md): 주요 설계 결정과 대안
+
+## 로드맵과 제한
+
+현재 범위는 로컬 단일 운영자, UTF-8 text/Markdown 근거와 정성 비교다. SHA-256과 JCS는
+drift와 손상을 탐지하지만 작성자 신원이나 악의적인 전체 로컬 재작성은 증명하지 않는다.
+
+remote MCP, 인증·서명, DB/cloud backend, hosted viewer, RAG, multimodal, numeric scoring,
+optimization, 자동 GC와 PyPI 배포는 현재 범위 밖이다. `v1.0.0`은 공개 main 병합, release
+artifact와 지원 OS의 clean install을 같은 commit에서 검증한 뒤에만 선언한다.
 
 ## 라이선스
 
-MIT
+[MIT](LICENSE)

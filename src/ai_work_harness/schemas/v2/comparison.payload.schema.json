@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:comparison",
+  "title": "Deterministic qualitative comparison payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_order",
+    "criterion_order",
+    "matrix",
+    "eligible_candidate_ids",
+    "ineligible_candidate_ids",
+    "unresolved_risks",
+    "scoring"
+  ],
+  "properties": {
+    "candidate_order": {"$ref": "#/$defs/id-list"},
+    "criterion_order": {"$ref": "#/$defs/id-list"},
+    "matrix": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "criterion_id",
+          "priority",
+          "assessment",
+          "effective_assessment",
+          "evidence_count",
+          "review_status"
+        ],
+        "properties": {
+          "candidate_id": {"$ref": "#/$defs/id"},
+          "criterion_id": {"$ref": "#/$defs/id"},
+          "priority": {"enum": ["must", "high", "medium", "low"]},
+          "assessment": {"$ref": "#/$defs/assessment"},
+          "effective_assessment": {"$ref": "#/$defs/assessment"},
+          "evidence_count": {"type": "integer", "minimum": 0},
+          "review_status": {
+            "enum": ["not_required", "missing", "concur", "override", "request_revision"]
+          }
+        }
+      }
+    },
+    "eligible_candidate_ids": {"$ref": "#/$defs/id-list"},
+    "ineligible_candidate_ids": {"$ref": "#/$defs/id-list"},
+    "unresolved_risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "criterion_id",
+          "priority",
+          "effective_assessment"
+        ],
+        "properties": {
+          "candidate_id": {"$ref": "#/$defs/id"},
+          "criterion_id": {"$ref": "#/$defs/id"},
+          "priority": {"enum": ["must", "high", "medium", "low"]},
+          "effective_assessment": {"$ref": "#/$defs/assessment"}
+        }
+      }
+    },
+    "scoring": {"type": "null"}
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "id-list": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/id"}
+    },
+    "assessment": {
+      "enum": ["meets", "partial", "fails", "insufficient_evidence", "not_applicable"]
+    }
+  }
+}

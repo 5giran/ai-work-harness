@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:human-confirmation",
+  "title": "Human confirmation payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "confirmation_id",
+    "subject_type",
+    "subject_sha256",
+    "actor_label",
+    "identity_verified",
+    "method",
+    "confirmed_at"
+  ],
+  "properties": {
+    "confirmation_id": {"$ref": "#/$defs/uuid4"},
+    "subject_type": {
+      "enum": ["decision-frame", "candidate-set", "criteria-set", "outbound-manifest"]
+    },
+    "subject_sha256": {"$ref": "#/$defs/sha256"},
+    "actor_label": {"const": "local_operator"},
+    "identity_verified": {"const": false},
+    "method": {"const": "digest_challenge"},
+    "confirmed_at": {"$ref": "#/$defs/timestamp"},
+    "outbound_manifest": {"$ref": "#/$defs/outbound-manifest"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"subject_type": {"const": "outbound-manifest"}}},
+      "then": {"required": ["outbound_manifest"]},
+      "else": {"not": {"required": ["outbound_manifest"]}}
+    }
+  ],
+  "$defs": {
+    "uuid4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "outbound-manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "operation",
+        "prompt_id",
+        "prompt_sha256",
+        "input_sha256",
+        "input_snapshot_sha256",
+        "source_sha256s",
+        "evidence_count",
+        "source_excerpt_bytes",
+        "context_bytes",
+        "reasoning_effort",
+        "max_tool_rounds",
+        "max_output_tokens",
+        "timeout_seconds",
+        "max_retries",
+        "max_context_bytes",
+        "max_lookup_bytes"
+      ],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "operation": {"enum": ["evaluations", "recommendation"]},
+        "prompt_id": {"type": "string", "minLength": 1},
+        "prompt_sha256": {"$ref": "#/$defs/sha256"},
+        "input_sha256": {"$ref": "#/$defs/sha256"},
+        "input_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+        "source_sha256s": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/sha256"}
+        },
+        "evidence_count": {"type": "integer", "minimum": 0, "maximum": 50},
+        "source_excerpt_bytes": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "context_bytes": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "reasoning_effort": {"enum": ["none", "minimal", "low", "medium", "high", "xhigh"]},
+        "max_tool_rounds": {"type": "integer", "minimum": 1, "maximum": 12},
+        "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 8000},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+        "max_retries": {"type": "integer", "minimum": 0, "maximum": 2},
+        "max_context_bytes": {"const": 1000000},
+        "max_lookup_bytes": {"const": 1000000}
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "ai_initial_interpretation": "운영 통제와 분류 품질을 함께 비교한다.",
+  "assumptions": [
+    "이 데모의 입력과 평가는 모두 합성 데이터다."
+  ],
+  "blocked_decision": "어떤 triage 방식을 운영할지 선택하지 못하고 있다.",
+  "business_user": "고객지원 운영 책임자",
+  "open_questions": [],
+  "problem_statement": "소규모 한국어 고객문의 triage 운영 방식을 선택한다.",
+  "scope_in": [
+    "합성 텍스트 문의의 분류 운영 방식"
+  ],
+  "scope_out": [
+    "실제 고객 데이터",
+    "운영 배포"
+  ],
+  "user_statement_verbatim": "소규모 한국어 고객문의 triage 운영 방식을 정해야 한다."
+}

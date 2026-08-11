@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:current-pointer",
+  "title": "Decision session current pointer v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "session_id", "generation", "snapshot_sha256"],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "session_id": {"$ref": "#/$defs/safe-id"},
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "snapshot_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "safe-id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

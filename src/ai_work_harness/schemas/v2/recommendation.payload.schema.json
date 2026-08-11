@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:recommendation",
+  "title": "Recommendation payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "disposition",
+    "candidate_id",
+    "rationale",
+    "evidence_ids",
+    "risks",
+    "uncertainties"
+  ],
+  "properties": {
+    "disposition": {"enum": ["select", "abstain"]},
+    "candidate_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+    "rationale": {"type": "string", "minLength": 1},
+    "evidence_ids": {"$ref": "#/$defs/text-list"},
+    "risks": {"$ref": "#/$defs/text-list"},
+    "uncertainties": {"$ref": "#/$defs/text-list"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"disposition": {"const": "select"}}},
+      "then": {"properties": {"candidate_id": {"$ref": "#/$defs/id"}}},
+      "else": {"properties": {"candidate_id": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "text-list": {"type": "array", "items": {"type": "string"}}
+  }
+}

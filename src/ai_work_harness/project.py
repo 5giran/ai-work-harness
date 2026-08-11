@@ -77,10 +77,26 @@ def _load_validated(path: Path, kind: str) -> dict[str, Any]:
     return value
 
 
+def _contains_only_v2_state(state: Path) -> bool:
+    if not state.is_dir() or state.is_symlink():
+        return False
+    entries = list(state.iterdir())
+    return bool(
+        len(entries) == 1
+        and entries[0].name == "v2"
+        and entries[0].is_dir()
+        and not entries[0].is_symlink()
+    )
+
+
 def init_project(root: Path) -> dict[str, Any]:
     paths = ProjectPaths.from_root(root)
     paths.root.mkdir(parents=True, exist_ok=True)
-    if paths.state.exists() and not paths.manifest.is_file():
+    if (
+        paths.state.exists()
+        and not paths.manifest.is_file()
+        and not _contains_only_v2_state(paths.state)
+    ):
         raise HarnessError(
             "PARTIAL_INITIALIZATION",
             "State directory exists without an input manifest",

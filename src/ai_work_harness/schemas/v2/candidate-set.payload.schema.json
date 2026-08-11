@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:candidate-set",
+  "title": "Candidate set payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidates"],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "title",
+          "summary",
+          "proposed_by",
+          "benefits",
+          "drawbacks",
+          "risks",
+          "uncertainties"
+        ],
+        "properties": {
+          "candidate_id": {"$ref": "#/$defs/id"},
+          "title": {"$ref": "#/$defs/text"},
+          "summary": {"$ref": "#/$defs/text"},
+          "proposed_by": {"$ref": "#/$defs/text"},
+          "benefits": {"$ref": "#/$defs/text-list"},
+          "drawbacks": {"$ref": "#/$defs/text-list"},
+          "risks": {"$ref": "#/$defs/text-list"},
+          "uncertainties": {"$ref": "#/$defs/text-list"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "text": {"type": "string", "minLength": 1},
+    "text-list": {"type": "array", "items": {"type": "string"}}
+  }
+}
