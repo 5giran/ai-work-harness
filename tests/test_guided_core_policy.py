@@ -283,12 +283,13 @@ def test_final_constraints_expose_per_candidate_agent_risks_without_mutation() -
     )
     assert constraints.reject_all_shared_risk_feasible is True
     assert "three/privacy" in constraints.valid_acknowledgement_cell_ids
-    assert constraints.unknown_acknowledgement_cell_ids(
-        ["one/quality", "not/a-cell"]
-    ) == ("not/a-cell",)
-    assert constraints.missing_required_risk_acknowledgement_cell_ids(
-        ["one/quality"]
-    ) == ("one/latency", "one/speed")
+    assert constraints.unknown_acknowledgement_cell_ids(["one/quality", "not/a-cell"]) == (
+        "not/a-cell",
+    )
+    assert constraints.missing_required_risk_acknowledgement_cell_ids(["one/quality"]) == (
+        "one/latency",
+        "one/speed",
+    )
 
 
 def test_reject_all_constraints_preserve_shared_risk_validation_details() -> None:
@@ -361,9 +362,7 @@ def test_reject_all_without_eligible_candidates_needs_no_shared_risk() -> None:
     constraints = final_decision_constraints(
         comparison={
             "eligible_candidate_ids": [],
-            "matrix": [
-                _matrix_cell("one", "privacy", "must", effective_assessment="fails")
-            ],
+            "matrix": [_matrix_cell("one", "privacy", "must", effective_assessment="fails")],
         },
         producer_kind="fixture",
         disposition="reject_all",

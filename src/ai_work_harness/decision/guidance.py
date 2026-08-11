@@ -255,8 +255,7 @@ class ValidatedOperatorState:
             raise ValueError("approval_challenge ref and active_challenge must be present together")
         if (
             self.active_challenge is not None
-            and self.active_challenge.challenge_snapshot_sha256
-            != self.pinned_snapshot_sha256
+            and self.active_challenge.challenge_snapshot_sha256 != self.pinned_snapshot_sha256
         ):
             raise ValueError("active challenge must bind the pinned challenge snapshot")
         object.__setattr__(self, "refs", MappingProxyType(refs))
@@ -320,10 +319,7 @@ class FinalDecisionConstraints:
             self,
             "required_by_candidate",
             MappingProxyType(
-                {
-                    key: tuple(value)
-                    for key, value in sorted(self.required_by_candidate.items())
-                }
+                {key: tuple(value) for key, value in sorted(self.required_by_candidate.items())}
             ),
         )
         object.__setattr__(
@@ -353,9 +349,7 @@ class FinalDecisionConstraints:
                 }
             },
             "reject_all": {
-                "required_risk_acknowledgements": list(
-                    self.reject_all_required_acknowledgements
-                ),
+                "required_risk_acknowledgements": list(self.reject_all_required_acknowledgements),
                 "shared_risk_condition": {
                     "required": self.reject_all_shared_risk_required,
                     "feasible": self.reject_all_shared_risk_feasible,
@@ -550,20 +544,14 @@ def _pending_reviews(state: ValidatedOperatorState) -> tuple[PendingReview, ...]
                 assessment=str(cell.get("assessment", "unknown")),
                 rationale=str(cell.get("rationale", "")),
                 confidence=str(cell.get("confidence", "unknown")),
-                evidence_ids=tuple(
-                    item for item in evidence_ids if isinstance(item, str)
-                )
+                evidence_ids=tuple(item for item in evidence_ids if isinstance(item, str))
                 if isinstance(evidence_ids, Sequence)
                 else (),
-                uncertainties=tuple(
-                    item for item in uncertainties if isinstance(item, str)
-                )
+                uncertainties=tuple(item for item in uncertainties if isinstance(item, str))
                 if isinstance(uncertainties, Sequence)
                 else (),
                 status=status,
-                revision_reason=(
-                    revision_reason if isinstance(revision_reason, str) else None
-                ),
+                revision_reason=(revision_reason if isinstance(revision_reason, str) else None),
             )
         )
     return tuple(result)
@@ -582,14 +570,10 @@ def _final_constraints(state: ValidatedOperatorState) -> FinalDecisionConstraint
     return FinalDecisionConstraints(
         eligible_candidate_ids=policy.eligible_candidate_ids,
         required_by_candidate=policy.required_risk_acknowledgement_cell_ids_by_candidate,
-        reject_all_required_acknowledgements=(
-            policy.required_risk_acknowledgement_cell_ids
-        ),
+        reject_all_required_acknowledgements=(policy.required_risk_acknowledgement_cell_ids),
         reject_all_shared_risk_required=bool(policy.relevant_candidate_ids),
         reject_all_shared_risk_feasible=policy.reject_all_shared_risk_feasible,
-        reject_all_shared_risk_criterion_ids=(
-            policy.reject_all_shared_risk_criterion_ids
-        ),
+        reject_all_shared_risk_criterion_ids=(policy.reject_all_shared_risk_criterion_ids),
     )
 
 
@@ -637,10 +621,7 @@ def _summary(state: ValidatedOperatorState) -> Mapping[str, Any]:
         }
         for ref_name in active_refs
     }
-    producers = {
-        ref_name: _producer_kind(state, ref_name)
-        for ref_name in active_refs
-    }
+    producers = {ref_name: _producer_kind(state, ref_name) for ref_name in active_refs}
     return {"sources": sources, "artifacts": artifacts, "producers": producers}
 
 

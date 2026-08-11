@@ -435,10 +435,7 @@ def validate_evaluations(
 def evaluation_cell_requires_review(*, producer_kind: str, priority: str) -> bool:
     """Return whether core policy requires a human review for an evaluation cell."""
 
-    return (
-        producer_kind in AGENT_PRODUCER_KINDS
-        and priority in REQUIRED_REVIEW_PRIORITIES
-    )
+    return producer_kind in AGENT_PRODUCER_KINDS and priority in REQUIRED_REVIEW_PRIORITIES
 
 
 def required_review_cell_ids(
@@ -698,18 +695,14 @@ def final_decision_constraints(
         )
 
     def is_risk(cell: Mapping[str, Any]) -> bool:
-        return bool(
-            cell["effective_assessment"] != "meets"
-            or is_agent_optional_review_risk(cell)
-        )
+        return bool(cell["effective_assessment"] != "meets" or is_agent_optional_review_risk(cell))
 
     required_by_candidate = {
         eligible_candidate_id: tuple(
             sorted(
                 cell_id(cell)
                 for cell in matrix
-                if cell["candidate_id"] == eligible_candidate_id
-                and requires_acknowledgement(cell)
+                if cell["candidate_id"] == eligible_candidate_id and requires_acknowledgement(cell)
             )
         )
         for eligible_candidate_id in eligible_candidate_ids
@@ -733,9 +726,7 @@ def final_decision_constraints(
         for eligible_candidate_id in eligible_candidate_ids
     }
     shared_risk_criteria = (
-        set.intersection(*risk_criteria_by_candidate.values())
-        if eligible_candidate_ids
-        else set()
+        set.intersection(*risk_criteria_by_candidate.values()) if eligible_candidate_ids else set()
     )
     shared_risk_cell_ids_by_criterion = {
         criterion_id: tuple(
@@ -773,7 +764,5 @@ def final_decision_constraints(
         risk_cell_ids_by_candidate=risk_cells_by_candidate,
         reject_all_shared_risk_criterion_ids=tuple(sorted(shared_risk_criteria)),
         reject_all_shared_risk_cell_ids_by_criterion=shared_risk_cell_ids_by_criterion,
-        reject_all_shared_risk_feasible=(
-            not eligible_candidate_ids or bool(shared_risk_criteria)
-        ),
+        reject_all_shared_risk_feasible=(not eligible_candidate_ids or bool(shared_risk_criteria)),
     )
