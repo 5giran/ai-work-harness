@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v1:route",
+  "title": "Deterministic route v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "input_manifest_sha256",
+    "frame_sha256",
+    "profile_sha256",
+    "route"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "input_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "frame_sha256": {"$ref": "#/$defs/sha256"},
+    "profile_sha256": {"$ref": "#/$defs/sha256"},
+    "route": {"enum": ["batch_pipeline", "rule_decision"]}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v1:task-profile",
+  "title": "Task profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "input_manifest_sha256",
+    "frame_sha256",
+    "input_source",
+    "modalities",
+    "capabilities",
+    "objective"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "input_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "frame_sha256": {"$ref": "#/$defs/sha256"},
+    "input_source": {"type": "string", "minLength": 1},
+    "modalities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "objective": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "capabilities": ["aggregate", "rank", "transform"],
+    "expected_route": "batch_pipeline",
+    "input_source": "local_files",
+    "modalities": ["csv", "json"]
+  },
+  {
+    "capabilities": ["apply_rules", "validate"],
+    "expected_route": "rule_decision",
+    "input_source": "local_files",
+    "modalities": ["text"]
+  }
+]

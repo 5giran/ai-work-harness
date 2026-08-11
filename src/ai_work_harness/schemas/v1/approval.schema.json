@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v1:approval",
+  "title": "Approval binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "input_manifest_sha256",
+    "frame_sha256",
+    "profile_sha256",
+    "route_sha256",
+    "decision",
+    "decision_sha256",
+    "reason",
+    "reason_sha256",
+    "binding_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "approval_id": {
+      "type": "string",
+      "pattern": "^approval-[0-9]{6}$"
+    },
+    "input_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "frame_sha256": {"$ref": "#/$defs/sha256"},
+    "profile_sha256": {"$ref": "#/$defs/sha256"},
+    "route_sha256": {"$ref": "#/$defs/sha256"},
+    "decision": {"type": "string", "minLength": 1},
+    "decision_sha256": {"$ref": "#/$defs/sha256"},
+    "reason": {"type": "string", "minLength": 1},
+    "reason_sha256": {"$ref": "#/$defs/sha256"},
+    "binding_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

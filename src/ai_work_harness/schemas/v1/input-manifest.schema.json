@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v1:input-manifest",
+  "title": "Input manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "inputs"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "inputs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/input"}
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logical_id", "bytes", "sha256"],
+      "properties": {
+        "logical_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+        },
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
