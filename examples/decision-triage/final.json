@@ -1,0 +1,10 @@
+{
+  "candidate_id": "rules",
+  "disposition": "select",
+  "reason": "이 소규모 팀에서는 rules가 운영과 설명이 가장 단순하다.",
+  "risk_acknowledgements": [
+    "rules/classification-quality",
+    "rules/latency",
+    "rules/operating-cost"
+  ]
+}

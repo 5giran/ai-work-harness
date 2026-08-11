@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:evaluation-review-set",
+  "title": "Evaluation review set payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reviews"],
+  "properties": {
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate_id", "criterion_id", "outcome", "reason"],
+        "properties": {
+          "candidate_id": {"$ref": "#/$defs/id"},
+          "criterion_id": {"$ref": "#/$defs/id"},
+          "outcome": {"enum": ["concur", "override", "request_revision"]},
+          "reason": {"type": "string", "minLength": 1},
+          "replacement_assessment": {"$ref": "#/$defs/assessment"},
+          "replacement_evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"$ref": "#/$defs/id"}
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"outcome": {"const": "override"}}},
+            "then": {
+              "required": ["replacement_assessment", "replacement_evidence_ids"]
+            },
+            "else": {
+              "not": {
+                "anyOf": [
+                  {"required": ["replacement_assessment"]},
+                  {"required": ["replacement_evidence_ids"]}
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {"const": "override"},
+                "replacement_assessment": {"const": "insufficient_evidence"}
+              },
+              "required": ["outcome", "replacement_assessment"]
+            },
+            "then": {
+              "properties": {
+                "replacement_evidence_ids": {"maxItems": 0}
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "assessment": {
+      "enum": ["meets", "partial", "fails", "insufficient_evidence", "not_applicable"]
+    }
+  }
+}

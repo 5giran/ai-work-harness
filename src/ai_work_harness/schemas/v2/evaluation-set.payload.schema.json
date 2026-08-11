@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:evaluation-set",
+  "title": "Evaluation set payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cells"],
+  "properties": {
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "criterion_id",
+          "assessment",
+          "rationale",
+          "evidence_ids",
+          "confidence",
+          "uncertainties"
+        ],
+        "properties": {
+          "candidate_id": {"$ref": "#/$defs/id"},
+          "criterion_id": {"$ref": "#/$defs/id"},
+          "assessment": {"$ref": "#/$defs/assessment"},
+          "rationale": {"type": "string", "minLength": 1},
+          "evidence_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"$ref": "#/$defs/id"}
+          },
+          "confidence": {"enum": ["low", "medium", "high"]},
+          "uncertainties": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "pattern": ".*\\S.*"}
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"assessment": {"const": "insufficient_evidence"}}},
+            "then": {
+              "properties": {
+                "evidence_ids": {"maxItems": 0},
+                "uncertainties": {"minItems": 1}
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "assessment": {
+      "enum": ["meets", "partial", "fails", "insufficient_evidence", "not_applicable"]
+    }
+  }
+}

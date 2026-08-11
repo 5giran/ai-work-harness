@@ -1,0 +1,33 @@
+{
+  "name": "ai-work-harness-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "schema:generate": "node scripts/generate-validator.mjs",
+    "example:generate": "node scripts/generate-example.mjs",
+    "generated:refresh": "npm run schema:generate && npm run example:generate",
+    "prelint": "npm run generated:refresh",
+    "lint": "tsc --noEmit",
+    "pretest": "npm run generated:refresh",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prebuild": "npm run generated:refresh",
+    "build": "tsc --noEmit && vite build",
+    "test:e2e": "npm run build && playwright test",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "canonicalize": "2.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.0",
+    "@playwright/test": "1.62.1",
+    "ajv": "8.20.0",
+    "jsdom": "26.1.0",
+    "typescript": "5.9.2",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
+  }
+}

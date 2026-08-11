@@ -1,0 +1,34 @@
+{
+  "criteria": [
+    {
+      "criterion_id": "privacy",
+      "definition": "문의 텍스트가 허용된 처리 경계를 벗어나지 않는다.",
+      "priority": "must",
+      "title": "Privacy"
+    },
+    {
+      "criterion_id": "auditability",
+      "definition": "운영자가 각 분류 결과의 근거를 설명할 수 있다.",
+      "priority": "must",
+      "title": "Auditability"
+    },
+    {
+      "criterion_id": "classification-quality",
+      "definition": "합성 문의를 운영 목적에 맞게 분류한다.",
+      "priority": "high",
+      "title": "Classification quality"
+    },
+    {
+      "criterion_id": "latency",
+      "definition": "운영 목표 안에서 결과를 반환한다.",
+      "priority": "medium",
+      "title": "Latency"
+    },
+    {
+      "criterion_id": "operating-cost",
+      "definition": "반복 운영 부담이 소규모 팀에 적합하다.",
+      "priority": "medium",
+      "title": "Operating cost"
+    }
+  ]
+}

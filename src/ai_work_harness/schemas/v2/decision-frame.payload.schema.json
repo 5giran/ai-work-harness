@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:decision-frame",
+  "title": "Decision frame payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "user_statement_verbatim",
+    "ai_initial_interpretation",
+    "business_user",
+    "blocked_decision",
+    "problem_statement",
+    "scope_in",
+    "scope_out",
+    "assumptions",
+    "open_questions"
+  ],
+  "properties": {
+    "user_statement_verbatim": {"$ref": "#/$defs/text"},
+    "ai_initial_interpretation": {"$ref": "#/$defs/text"},
+    "business_user": {"$ref": "#/$defs/nullable-text"},
+    "blocked_decision": {"$ref": "#/$defs/nullable-text"},
+    "problem_statement": {"$ref": "#/$defs/nullable-text"},
+    "scope_in": {"$ref": "#/$defs/text-list"},
+    "scope_out": {"$ref": "#/$defs/text-list"},
+    "assumptions": {"$ref": "#/$defs/text-list"},
+    "open_questions": {"$ref": "#/$defs/text-list"}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "nullable-text": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/text"}]
+    },
+    "text-list": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

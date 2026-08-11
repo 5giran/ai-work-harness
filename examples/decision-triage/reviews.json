@@ -1,0 +1,58 @@
+{
+  "reviews": [
+    {
+      "candidate_id": "rules",
+      "criterion_id": "privacy",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "rules",
+      "criterion_id": "auditability",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "rules",
+      "criterion_id": "classification-quality",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "classical-ml",
+      "criterion_id": "privacy",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "classical-ml",
+      "criterion_id": "auditability",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "classical-ml",
+      "criterion_id": "classification-quality",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "llm-assisted",
+      "criterion_id": "privacy",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "llm-assisted",
+      "criterion_id": "auditability",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    },
+    {
+      "candidate_id": "llm-assisted",
+      "criterion_id": "classification-quality",
+      "outcome": "concur",
+      "reason": "로컬 운영자가 합성 source observation을 검토했다."
+    }
+  ]
+}

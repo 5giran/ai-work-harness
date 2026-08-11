@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:migration-report",
+  "title": "One-way v1 migration report payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "v1_fingerprint",
+    "v1_artifacts",
+    "migrated_sources",
+    "frame_migrated",
+    "confirmations_promoted",
+    "approvals_promoted"
+  ],
+  "properties": {
+    "v1_fingerprint": {"$ref": "#/$defs/sha256"},
+    "v1_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "bytes"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "migrated_sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "v1_logical_id", "blob_sha256", "bytes"],
+        "properties": {
+          "source_id": {"$ref": "#/$defs/id"},
+          "v1_logical_id": {"type": "string", "minLength": 1},
+          "blob_sha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "frame_migrated": {"type": "boolean"},
+    "confirmations_promoted": {"const": false},
+    "approvals_promoted": {"const": false}
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

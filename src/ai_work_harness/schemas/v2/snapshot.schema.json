@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:snapshot",
+  "title": "Decision session snapshot v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "generation",
+    "parent_snapshot_sha256",
+    "created_at",
+    "refs"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "session_id": {"$ref": "#/$defs/safe-id"},
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "parent_snapshot_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/sha256"}
+      ]
+    },
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "refs": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/ref-key"},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "operation": {"$ref": "#/$defs/operation"}
+  },
+  "$defs": {
+    "safe-id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "ref-key": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$"
+    },
+    "operation-name": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"$ref": "#/$defs/operation-name"},
+        "idempotency_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "request_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["idempotency_key"]},
+          "then": {"required": ["request_sha256"]}
+        },
+        {
+          "if": {"required": ["request_sha256"]},
+          "then": {"required": ["idempotency_key"]}
+        }
+      ]
+    }
+  }
+}

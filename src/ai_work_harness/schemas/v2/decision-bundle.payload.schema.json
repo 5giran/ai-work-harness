@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:decision-bundle",
+  "title": "Decision bundle payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["refs"],
+  "properties": {
+    "refs": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$"
+      },
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

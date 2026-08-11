@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-work-harness:schema:v2:payload:approval-challenge",
+  "title": "Approval challenge payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "challenge_id",
+    "decision_bundle_sha256",
+    "parent_snapshot_sha256",
+    "proposed_disposition",
+    "nonce",
+    "issued_at",
+    "expires_at",
+    "actor_label",
+    "identity_verified"
+  ],
+  "properties": {
+    "challenge_id": {"$ref": "#/$defs/uuid4"},
+    "decision_bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "parent_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "proposed_disposition": {"enum": ["approved", "rejected", "changes_requested"]},
+    "nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "issued_at": {"$ref": "#/$defs/timestamp"},
+    "expires_at": {"$ref": "#/$defs/timestamp"},
+    "actor_label": {"const": "local_operator"},
+    "identity_verified": {"const": false}
+  },
+  "$defs": {
+    "uuid4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    }
+  }
+}

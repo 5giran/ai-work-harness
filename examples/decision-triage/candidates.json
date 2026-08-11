@@ -1,0 +1,34 @@
+{
+  "candidates": [
+    {
+      "benefits": ["규칙과 결과를 운영자가 직접 추적할 수 있다."],
+      "candidate_id": "rules",
+      "drawbacks": ["규칙 유지보수가 수작업이다."],
+      "proposed_by": "synthetic-demo",
+      "risks": ["분류 품질이 복잡한 표현에서 낮아질 수 있다."],
+      "summary": "명시적 규칙으로 문의를 분류한다.",
+      "title": "Rules",
+      "uncertainties": ["합성 증거의 범위가 작다."]
+    },
+    {
+      "benefits": ["합성 조건에서 분류 품질과 감사 가능성을 함께 제공한다."],
+      "candidate_id": "classical-ml",
+      "drawbacks": ["학습 데이터와 재학습 절차가 필요하다."],
+      "proposed_by": "synthetic-demo",
+      "risks": ["데이터 분포 변화로 품질이 낮아질 수 있다."],
+      "summary": "지도학습 텍스트 분류기를 운영한다.",
+      "title": "Classical ML",
+      "uncertainties": ["합성 증거의 범위가 작다."]
+    },
+    {
+      "benefits": ["새로운 표현에 유연한 초안을 만들 수 있다."],
+      "candidate_id": "llm-assisted",
+      "drawbacks": ["외부 모델 경계와 검토 운영이 추가된다."],
+      "proposed_by": "synthetic-demo",
+      "risks": ["합성 privacy 기준을 충족하지 못한다."],
+      "summary": "LLM 초안을 사람이 검토한다.",
+      "title": "LLM assisted",
+      "uncertainties": ["합성 증거의 범위가 작다."]
+    }
+  ]
+}
