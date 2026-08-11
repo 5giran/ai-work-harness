@@ -61,6 +61,14 @@ def _build_decision_parser(commands: Any) -> None:
     )
     decision_commands = decision.add_subparsers(dest="decision_group", required=True)
 
+    guide = decision_commands.add_parser(
+        "guide",
+        help="Run the resumable human-oriented decision workflow",
+    )
+    guide.set_defaults(decision_operation="decision guide")
+    guide.add_argument("session_id")
+    guide.add_argument("--lang", choices=("ko", "en"), default="ko")
+
     _decision_leaf(
         decision_commands,
         "init",
@@ -698,6 +706,10 @@ def _run_decision(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "decision":
+        if args.decision_operation == "decision guide":
+            from .guided_cli import run_guided_cli
+
+            return run_guided_cli(args.root, args.session_id, language=args.lang)
         return _run_decision(args)
     try:
         result = _run_v1(args)

@@ -50,6 +50,9 @@ scripts = {item.name for item in entry_points(group='console_scripts')}
 assert {'ai-work-harness', 'ai-work-harness-mcp'} <= scripts
 """
     _run([str(python), "-c", resource_check])
+    guide_help = _run([str(cli), "decision", "guide", "--help"])
+    if "session_id" not in guide_help or "--lang {ko,en}" not in guide_help:
+        raise SystemExit("guided decision command is missing from the clean wheel")
 
     with tempfile.TemporaryDirectory(prefix="ai-work-harness-wheel-smoke-") as directory:
         root = Path(directory)

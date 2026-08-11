@@ -79,6 +79,29 @@ def test_decision_init_and_status_use_v2_json_envelope(
     assert status["result"]["verified"] is True  # type: ignore[index]
 
 
+def test_decision_guide_cli_dispatches_before_any_non_tty_write(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "decision",
+            "guide",
+            "guided-smoke",
+            "--lang",
+            "en",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "INTERACTIVE_TERMINAL_REQUIRED" in captured.out
+    assert captured.err == ""
+    assert not (tmp_path / ".ai-work-harness").exists()
+
+
 def test_v1_cli_output_is_not_reinterpreted_as_v2(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

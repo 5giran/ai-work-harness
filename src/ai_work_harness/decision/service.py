@@ -1052,9 +1052,7 @@ class DecisionService:
         refs = _snapshot_refs(current)
         evaluation_sha = self._require_ref(refs, "evaluation_set")
         if "evaluation_review_set" in refs:
-            active_reviews = _artifact_payload(self._read(refs, "evaluation_review_set"))[
-                "reviews"
-            ]
+            active_reviews = _artifact_payload(self._read(refs, "evaluation_review_set"))["reviews"]
             if any(review["outcome"] == "request_revision" for review in active_reviews):
                 raise HarnessError(
                     "EVALUATION_REVISION_REQUIRED",
@@ -1118,9 +1116,7 @@ class DecisionService:
             raise HarnessError(
                 "EVALUATION_REVISION_REQUIRED",
                 "A requested revision requires a new evaluation before comparison",
-                details={
-                    "cells": [list(item) for item in completion.revision_required_cell_ids]
-                },
+                details={"cells": [list(item) for item in completion.revision_required_cell_ids]},
                 exit_code=3,
             )
         if not completion.complete:
@@ -1783,18 +1779,14 @@ class DecisionService:
             disposition=disposition,
             candidate_id=selected,
         )
-        unknown_acknowledgements = constraints.unknown_acknowledgement_cell_ids(
-            acknowledgements
-        )
+        unknown_acknowledgements = constraints.unknown_acknowledgement_cell_ids(acknowledgements)
         if unknown_acknowledgements:
             raise HarnessError(
                 "UNKNOWN_REFERENCE",
                 "Risk acknowledgements must reference comparison cells",
                 details={"risk_acknowledgements": list(unknown_acknowledgements)},
             )
-        missing = constraints.missing_required_risk_acknowledgement_cell_ids(
-            acknowledgements
-        )
+        missing = constraints.missing_required_risk_acknowledgement_cell_ids(acknowledgements)
         if missing:
             raise HarnessError(
                 "RISK_ACKNOWLEDGEMENT_REQUIRED",
@@ -1802,8 +1794,8 @@ class DecisionService:
                 details={"missing": list(missing)},
             )
         if not constraints.reject_all_shared_risk_satisfied(acknowledgements):
-            acknowledged_by_candidate = (
-                constraints.acknowledged_risk_criterion_ids_by_candidate(acknowledgements)
+            acknowledged_by_candidate = constraints.acknowledged_risk_criterion_ids_by_candidate(
+                acknowledgements
             )
             raise HarnessError(
                 "REJECT_ALL_SHARED_RISK_REQUIRED",
@@ -2376,15 +2368,22 @@ class DecisionService:
     def status(self) -> dict[str, Any]:
         return self._status_for_snapshot(self._current())
 
-    def read_operator_state(self) -> ValidatedOperatorState:
-        """Return one immutable, fail-closed read model for the pinned current snapshot."""
+    def read_operator_state(
+        self,
+        snapshot_sha256: str | None = None,
+    ) -> ValidatedOperatorState:
+        """Return one immutable, fail-closed model for current or an explicit snapshot."""
 
         from ai_work_harness.decision.guidance import (
             ApprovalChallengeBinding,
             ValidatedOperatorState,
         )
 
-        snapshot = self._current()
+        snapshot = (
+            self.store.load_snapshot(snapshot_sha256)
+            if snapshot_sha256 is not None
+            else self._current()
+        )
         snapshot_sha = _snapshot_sha(snapshot)
         # Verify by the pinned digest.  A concurrent pointer move does not change
         # which graph this query plans from, and integrity failures are not
@@ -2401,9 +2400,7 @@ class DecisionService:
                 "payload": _artifact_payload(artifact),
             }
 
-        approval = (
-            artifacts["human_approval"]["payload"] if "human_approval" in artifacts else None
-        )
+        approval = artifacts["human_approval"]["payload"] if "human_approval" in artifacts else None
         final_decision = (
             artifacts["final_decision"]["payload"] if "final_decision" in artifacts else None
         )
@@ -2419,9 +2416,7 @@ class DecisionService:
             and final_decision["disposition"] == "select"
         )
         stale_reasons = (
-            ()
-            if "human_approval" in refs
-            else tuple(self._historical_stale_reasons(snapshot))
+            () if "human_approval" in refs else tuple(self._historical_stale_reasons(snapshot))
         )
         active_challenge = None
         if "approval_challenge" in refs:
@@ -2467,6 +2462,86 @@ class DecisionService:
             "snapshot_sha256": state.pinned_snapshot_sha256,
             **plan.to_public_dict(),
         }
+
+    def read_source_excerpt(
+        self,
+        *,
+        snapshot_sha256: str,
+        source_id: str,
+        start_line: int,
+        end_line: int,
+    ) -> dict[str, Any]:
+        """Read and hash one line-bounded excerpt from a verified pinned snapshot."""
+
+        if (
+            not isinstance(start_line, int)
+            or isinstance(start_line, bool)
+            or not isinstance(end_line, int)
+            or isinstance(end_line, bool)
+            or start_line < 1
+            or end_line < start_line
+        ):
+            raise HarnessError(
+                "INVALID_SOURCE_LOCATOR",
+                "Source line range must be 1-based, inclusive, and ordered",
+            )
+        snapshot = self.store.load_snapshot(snapshot_sha256)
+        self.verify(snapshot_sha256)
+        refs = _snapshot_refs(snapshot)
+        manifest = _artifact_payload(self._read(refs, "source_manifest"))
+        source = next(
+            (item for item in manifest["sources"] if item["source_id"] == source_id),
+            None,
+        )
+        if source is None:
+            raise HarnessError(
+                "UNKNOWN_REFERENCE",
+                "Source excerpt references an unknown source",
+                details={"source_id": source_id},
+            )
+        raw = self.store.read_object(source["blob_sha256"])
+        try:
+            lines = raw.decode("utf-8", errors="strict").splitlines(keepends=True)
+        except UnicodeDecodeError as exc:  # pragma: no cover - capture validates this
+            raise HarnessError(
+                "CORRUPT_SOURCE",
+                "Captured source is no longer UTF-8",
+                exit_code=5,
+            ) from exc
+        if end_line > len(lines):
+            raise HarnessError(
+                "INVALID_SOURCE_LOCATOR",
+                "Source line range exceeds the captured source",
+                details={"line_count": len(lines), "end_line": end_line},
+            )
+        excerpt_bytes = "".join(lines[start_line - 1 : end_line]).encode("utf-8")
+        return self._result(
+            snapshot,
+            source_id=source_id,
+            start_line=start_line,
+            end_line=end_line,
+            excerpt=excerpt_bytes.decode("utf-8"),
+            excerpt_sha256=sha256_bytes(excerpt_bytes),
+        )
+
+    def preview_invalidation(
+        self,
+        *,
+        snapshot_sha256: str,
+        ref_name: str,
+    ) -> tuple[str, ...]:
+        """List active refs that a replacement would make stale, without writing."""
+
+        if ref_name not in DOWNSTREAM:
+            raise HarnessError(
+                "UNKNOWN_ARTIFACT_REF",
+                "Artifact does not define a replacement boundary",
+                details={"ref_name": ref_name},
+            )
+        snapshot = self.store.load_snapshot(snapshot_sha256)
+        self.verify(snapshot_sha256)
+        refs = _snapshot_refs(snapshot)
+        return tuple(sorted(set(refs).intersection(DOWNSTREAM[ref_name])))
 
     def _status_for_snapshot(self, snapshot: Any) -> dict[str, Any]:
         refs = _snapshot_refs(snapshot)
