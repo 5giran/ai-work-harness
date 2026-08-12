@@ -35,13 +35,15 @@ def main() -> int:
     cli = _executable(venv, "ai-work-harness")
 
     version = _run([str(cli), "--version"])
-    if "0.4.0" not in version:
+    if "0.5.0" not in version:
         raise SystemExit(f"unexpected wheel version: {version.strip()}")
 
     resource_check = """
 from importlib.resources import files
-from importlib.metadata import entry_points
+from importlib.metadata import entry_points, version
+from ai_work_harness import __version__
 from ai_work_harness.decision.prompts import EVALUATION_PROMPT, RECOMMENDATION_PROMPT
+assert __version__ == version('ai-work-harness') == '0.5.0'
 schemas = list(files('ai_work_harness.schemas.v2').iterdir())
 assert len([item for item in schemas if item.name.endswith('.json')]) >= 20
 assert EVALUATION_PROMPT.prompt_id == 'evaluation-v1'
@@ -50,9 +52,72 @@ scripts = {item.name for item in entry_points(group='console_scripts')}
 assert {'ai-work-harness', 'ai-work-harness-mcp'} <= scripts
 """
     _run([str(python), "-c", resource_check])
+    guide_help = _run([str(cli), "decision", "guide", "--help"])
+    if "session_id" not in guide_help or "--lang {ko,en}" not in guide_help:
+        raise SystemExit("guided decision command is missing from the clean wheel")
 
     with tempfile.TemporaryDirectory(prefix="ai-work-harness-wheel-smoke-") as directory:
         root = Path(directory)
+        non_tty = subprocess.run(
+            [
+                str(cli),
+                "--root",
+                str(root),
+                "decision",
+                "guide",
+                "non-tty-must-not-exist",
+                "--lang",
+                "en",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if non_tty.returncode != 2 or "INTERACTIVE_TERMINAL_REQUIRED" not in non_tty.stdout:
+            raise SystemExit("non-TTY guide did not fail with its stable contract")
+        non_tty_session = root / ".ai-work-harness" / "v2" / "sessions" / "non-tty-must-not-exist"
+        if non_tty_session.exists():
+            raise SystemExit("non-TTY guide created a session before rejecting interaction")
+
+        guided_smoke = r"""
+import sys
+from pathlib import Path
+from ai_work_harness.guided_cli import run_guided_cli
+
+class Console:
+    def __init__(self):
+        self.responses = iter(('yes', 'quit'))
+    def is_interactive(self):
+        return True
+    def write(self, _text):
+        pass
+    def read(self, _prompt=''):
+        return next(self.responses)
+
+assert run_guided_cli(
+    Path(sys.argv[1]),
+    'guided-wheel-smoke',
+    language='en',
+    console=Console(),
+) == 0
+"""
+        _run([str(python), "-c", guided_smoke, str(root)])
+        guided = json.loads(
+            _run(
+                [
+                    str(cli),
+                    "--root",
+                    str(root),
+                    "decision",
+                    "next",
+                    "--session-id",
+                    "guided-wheel-smoke",
+                ]
+            )
+        )
+        if guided.get("result", {}).get("schema_version") != "operator-plan.v1":
+            raise SystemExit("clean-wheel guided session did not expose operator-plan.v1")
+
         legacy = json.loads(_run([str(cli), "--root", str(root), "init"]))
         if legacy.get("ok") is not True:
             raise SystemExit("legacy v1 init did not succeed")

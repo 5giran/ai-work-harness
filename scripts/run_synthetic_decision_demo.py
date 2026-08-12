@@ -1,36 +1,46 @@
 #!/usr/bin/env python3
-"""Run the synthetic v2 workflow; fixture mode makes no external request."""
+"""Run the synthetic triage decision through one guided CLI invocation."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import shlex
-import subprocess
+import re
 import tempfile
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from ai_work_harness.decision.service import DecisionService
+from ai_work_harness.guided_cli import run_guided_cli
+from ai_work_harness.guided_io import ConsolePort
+
+Response = str | Callable[[str], str]
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--cli",
-        default="ai-work-harness",
-        help="CLI command, for example '.venv/bin/ai-work-harness'",
+        help="Deprecated compatibility option; the demo now calls the packaged guide directly",
     )
     parser.add_argument("--root", type=Path, help="Demo project root (default: a new temp dir)")
     parser.add_argument("--session-id", default="triage-demo")
+    parser.add_argument("--lang", choices=("ko", "en"), default="ko")
     parser.add_argument(
         "--test-operator",
         action="store_true",
-        help="Auto-enter digest challenges for CI only; this is not human identity evidence",
+        help=(
+            "Inject deterministic prompt answers for CI; this is not human identity "
+            "or human-review evidence"
+        ),
     )
     parser.add_argument(
         "--skip-stale",
         action="store_true",
-        help="Stop after the ready snapshot instead of changing criteria",
+        help="Stop after exporting the ready snapshot instead of changing criteria",
     )
     parser.add_argument(
         "--evaluation-provider",
@@ -47,55 +57,6 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-
-
-class Demo:
-    def __init__(self, *, cli: str, root: Path, session_id: str, test_operator: bool) -> None:
-        self.command = shlex.split(cli)
-        self.root = root
-        self.session_id = session_id
-        self.test_operator = test_operator
-        self.parent = ""
-
-    def run(self, *arguments: str) -> dict[str, Any]:
-        command = [*self.command, "--root", str(self.root), *arguments]
-        completed = subprocess.run(command, text=True, capture_output=True, check=False)
-        serialized = completed.stdout if completed.returncode == 0 else completed.stderr
-        try:
-            payload = json.loads(serialized)
-        except json.JSONDecodeError as exc:
-            raise SystemExit(
-                f"Command did not return JSON (exit {completed.returncode}): "
-                f"{' '.join(command)}\n{serialized}"
-            ) from exc
-        if completed.returncode != 0:
-            raise SystemExit(json.dumps(payload, ensure_ascii=False, indent=2))
-        snapshot = payload.get("snapshot_sha256")
-        if isinstance(snapshot, str):
-            self.parent = snapshot
-        return payload
-
-    def mutate(self, *arguments: str) -> dict[str, Any]:
-        return self.run(
-            *arguments,
-            "--session-id",
-            self.session_id,
-            "--expected-parent",
-            self.parent,
-        )
-
-    def read(self, *arguments: str) -> dict[str, Any]:
-        return self.run(*arguments, "--session-id", self.session_id)
-
-    def exact(self, label: str, expected: str) -> str:
-        print(f"\n{label}\n{expected}")
-        if self.test_operator:
-            print("[CI test operator injected the exact value]")
-            return expected
-        actual = input("위 값을 그대로 입력하세요: ").strip()
-        if actual != expected:
-            raise SystemExit(f"{label} 불일치: 데모를 중단합니다.")
-        return actual
 
 
 def _evidence_payload(source: Path) -> dict[str, Any]:
@@ -127,174 +88,225 @@ def _evidence_payload(source: Path) -> dict[str, Any]:
     }
 
 
+def _exact_phrase(prompt: str) -> str:
+    match = re.search(
+        r"(?:SEND OPENAI|APPROVE rules) [0-9a-f]{12}",
+        prompt,
+    )
+    if match is None:
+        raise RuntimeError(f"exact consent phrase was not present in prompt: {prompt!r}")
+    return match.group(0)
+
+
+class TestOperatorConsole(ConsolePort):
+    """Prompt-aware CI driver; deliberately not evidence of a human identity."""
+
+    def __init__(self, responses: list[Response]) -> None:
+        self.responses = deque(responses)
+
+    def is_interactive(self) -> bool:
+        return True
+
+    def write(self, text: str) -> None:
+        print(text)
+
+    def read(self, prompt: str = "") -> str:
+        if not self.responses:
+            raise EOFError("synthetic test operator exhausted its prompt script")
+        response = self.responses.popleft()
+        value = response(prompt) if callable(response) else response
+        rendered = value if value else "<Enter>"
+        print(f"{prompt}{rendered}")
+        return value
+
+
+def _guided_prefix(example: Path, evidence_file: Path) -> list[Response]:
+    return [
+        "yes",  # create the missing session
+        "",  # continue: source
+        "triage-source",
+        str(example / "source.md"),
+        "text/markdown",
+        "",  # continue: frame
+        "json",
+        str(example / "frame.json"),
+        "",  # do not save another draft
+        "",  # continue: confirm frame
+        "confirm",
+        "",  # continue: candidates
+        "json",
+        str(example / "candidates.json"),
+        "",  # do not save another draft
+        "",  # continue: confirm candidates
+        "confirm",
+        "",  # continue: criteria
+        "json",
+        str(example / "criteria.json"),
+        "",  # do not save another draft
+        "",  # continue: confirm criteria
+        "confirm",
+        "",  # continue: evidence
+        "json",
+        str(evidence_file),
+        "",  # do not save another draft
+        "",  # continue: evaluation
+    ]
+
+
+def _fixture_responses(
+    example: Path,
+    evidence_file: Path,
+    export_file: Path,
+    *,
+    skip_stale: bool,
+) -> list[Response]:
+    responses = [*_guided_prefix(example, evidence_file), "fixture", ""]
+    for index in range(9):
+        responses.extend(
+            (
+                "concur",
+                f"Synthetic test operator reviewed Must/High cell {index + 1}.",
+            )
+        )
+    responses.extend(
+        (
+            "yes",  # commit all Must/High reviews
+            "",  # continue: recommendation
+            "fixture",
+            "",  # continue: final decision
+            "select",
+            "rules",  # intentionally differ from Fixture recommendation
+            "Rules are the simplest reviewed operating choice for this small team.",
+            "yes",  # classification-quality risk
+            "yes",  # latency risk
+            "yes",  # operating-cost risk
+            "yes",  # record final decision
+            "",  # continue: create challenge
+            "approved",
+            "",  # continue: commit challenge
+            _exact_phrase,
+            "Reviewed the complete synthetic decision bundle.",
+            "export",
+            str(export_file),
+        )
+    )
+    if skip_stale:
+        responses.append("finish")
+    else:
+        responses.extend(
+            (
+                "change",
+                "criteria_set",
+                "yes",
+                "json",
+                str(example / "criteria.changed.json"),
+                "",  # do not save another draft
+                "quit",
+            )
+        )
+    return responses
+
+
+def _openai_responses(example: Path, evidence_file: Path) -> list[Response]:
+    return [
+        *_guided_prefix(example, evidence_file),
+        "openai",
+        _exact_phrase,
+        "quit",  # one external draft only; no decision or approval
+    ]
+
+
+def _assert_fixture_outcome(
+    service: DecisionService,
+    *,
+    export_file: Path,
+    skip_stale: bool,
+) -> None:
+    status = service.status()
+    if skip_stale:
+        if status["ready"] is not True or status["decision_complete"] is not True:
+            raise SystemExit("Expected the approved select snapshot to be ready")
+    else:
+        if status["ready"] is not False or status["verified"] is not True:
+            raise SystemExit("Expected changed criteria to stale a still-valid graph")
+        if "criteria_set_changed" not in status["stale_reasons"]:
+            raise SystemExit("Expected the stale reason to identify the criteria change")
+    exported = json.loads(export_file.read_text(encoding="utf-8"))
+    if exported["status"]["ready"] is not True:
+        raise SystemExit("Expected the pre-change viewer export to preserve the ready decision")
+    final = exported["artifacts"]["final_decision"]["payload"]
+    if final["recommendation_relation"] != "different" or final["candidate_id"] != "rules":
+        raise SystemExit("Expected the human decision to differ from the Fixture recommendation")
+
+
 def main() -> int:
     args = _parser().parse_args()
     repository = Path(__file__).resolve().parents[1]
     example = repository / "examples" / "decision-triage"
-    root = args.root or Path(tempfile.mkdtemp(prefix="ai-work-harness-demo-"))
+    root = (args.root or Path(tempfile.mkdtemp(prefix="ai-work-harness-demo-"))).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    demo = Demo(
-        cli=args.cli,
-        root=root.resolve(),
-        session_id=args.session_id,
-        test_operator=args.test_operator,
-    )
-
-    initialized = demo.read("decision", "init")
-    demo.parent = initialized["snapshot_sha256"]
-    demo.mutate(
-        "decision",
-        "source",
-        "capture",
-        "--source-id",
-        "triage-source",
-        "--file",
-        str(example / "source.md"),
-        "--media-type",
-        "text/markdown",
-    )
-
-    for command, artifact_ref, payload_file in (
-        ("frame", "decision_frame", "frame.json"),
-        ("candidates", "candidate_set", "candidates.json"),
-        ("criteria", "criteria_set", "criteria.json"),
-    ):
-        demo.mutate(
-            "decision",
-            command,
-            "import",
-            "--from",
-            str(example / payload_file),
-        )
-        status = demo.read("decision", "status")
-        artifact_sha = status["result"]["refs"][artifact_ref]
-        entered = demo.exact(f"{command} artifact SHA-256", artifact_sha)
-        demo.mutate(
-            "decision",
-            command,
-            "confirm",
-            "--expected-artifact-sha",
-            entered,
-        )
+    session_dir = root / ".ai-work-harness" / "v2" / "sessions" / args.session_id
+    if session_dir.exists():
+        raise SystemExit(f"Demo session already exists: {session_dir}")
 
     evidence_file = root / "demo-input" / "evidence.json"
-    _write_json(evidence_file, _evidence_payload(example / "source.md"))
-    demo.mutate("decision", "evidence", "import", "--from", str(evidence_file))
-    if args.evaluation_provider == "openai":
-        preview = demo.read(
-            "decision",
-            "agent",
-            "preview",
-            "--operation",
-            "evaluations",
-            "--provider",
-            "openai",
-        )
-        manifest_sha = demo.exact(
-            "outbound manifest SHA-256",
-            preview["result"]["outbound_manifest_sha256"],
-        )
-        demo.mutate(
-            "decision",
-            "agent",
-            "consent",
-            "--operation",
-            "evaluations",
-            "--provider",
-            "openai",
-            "--expected-manifest-sha",
-            manifest_sha,
-        )
-        generated = demo.mutate(
-            "decision",
-            "evaluations",
-            "generate",
-            "--provider",
-            "openai",
-        )
-        demo.read("decision", "agent", "replay", "--mode", "validate")
-        print(f"\nOpenAI synthetic evaluation snapshot: {generated['snapshot_sha256']}")
-        print("One consent-bound draft generation completed; no decision was approved.")
-        print(f"Demo root preserved at: {root}")
-        return 0
-
-    demo.mutate("decision", "evaluations", "generate", "--provider", "fixture")
-    demo.mutate(
-        "decision",
-        "evaluations",
-        "review",
-        "--from",
-        str(example / "reviews.json"),
-    )
-    comparison = demo.mutate("decision", "compare")
-    assert comparison["result"]["eligible_candidate_ids"] == ["classical-ml", "rules"]
-    demo.mutate("decision", "recommend", "--provider", "fixture")
-    final = demo.mutate(
-        "decision",
-        "final",
-        "import",
-        "--from",
-        str(example / "final.json"),
-    )
-    assert final["result"]["recommendation_relation"] == "different"
-
-    challenge = demo.mutate(
-        "decision",
-        "approval",
-        "challenge",
-        "--disposition",
-        "approved",
-    )["result"]
-    challenge_id = demo.exact("approval challenge ID", challenge["challenge_id"])
-    nonce = demo.exact("approval nonce", challenge["nonce"])
-    bundle_sha = demo.exact("decision bundle SHA-256", challenge["decision_bundle_sha256"])
-    demo.mutate(
-        "decision",
-        "approval",
-        "commit",
-        "--challenge-id",
-        challenge_id,
-        "--nonce",
-        nonce,
-        "--expected-bundle-sha",
-        bundle_sha,
-        "--reason-file",
-        str(example / "approval-reason.txt"),
-    )
-
-    ready = demo.read("decision", "status")
-    if ready["result"]["ready"] is not True:
-        raise SystemExit("Expected the approved select snapshot to be ready")
-    demo.read("decision", "verify", "--snapshot", demo.parent)
     export_file = root / "approved-decision-view.v1.json"
-    demo.read(
-        "decision",
-        "export-view",
-        "--snapshot",
-        demo.parent,
-        "--output",
-        str(export_file),
-    )
-    print(f"\nREADY snapshot: {demo.parent}")
-    print(f"Offline viewer bundle: {export_file}")
+    _write_json(evidence_file, _evidence_payload(example / "source.md"))
 
-    if not args.skip_stale:
-        demo.mutate(
-            "decision",
-            "criteria",
-            "import",
-            "--from",
-            str(example / "criteria.changed.json"),
+    print("Synthetic data only. No real customer data is used.")
+    print(f"Demo root: {root}")
+    print(f"Session: {args.session_id}")
+    print(
+        "The injected test operator is deterministic CI input, not human identity "
+        "or human-review evidence."
+        if args.test_operator
+        else (
+            "Follow the guided prompts; no snapshot, artifact, nonce, or challenge value is copied."
         )
-        stale = demo.read("decision", "status")
-        if stale["result"]["ready"] is not False:
-            raise SystemExit("Expected changed criteria to make the previous approval stale")
-        if stale["result"]["verified"] is not True:
-            raise SystemExit("Expected the stale snapshot graph to remain internally valid")
-        print("\nAfter criteria change:")
-        print(json.dumps(stale["result"], ensure_ascii=False, indent=2, sort_keys=True))
+    )
 
-    print(f"\nDemo root preserved at: {root}")
+    console: ConsolePort | None = None
+    if args.test_operator:
+        responses = (
+            _openai_responses(example, evidence_file)
+            if args.evaluation_provider == "openai"
+            else _fixture_responses(
+                example,
+                evidence_file,
+                export_file,
+                skip_stale=args.skip_stale,
+            )
+        )
+        console = TestOperatorConsole(responses)
+
+    exit_code = run_guided_cli(
+        root,
+        args.session_id,
+        language=args.lang,
+        console=console,
+    )
+    if exit_code != 0:
+        return exit_code
+
+    service = DecisionService(root, args.session_id)
+    if args.evaluation_provider == "openai":
+        status = service.status()
+        if args.test_operator and (
+            "evaluation_set" not in status["refs"] or "agent_run" not in status["refs"]
+        ):
+            raise SystemExit("Expected one consent-bound OpenAI evaluation result")
+        print("One consent-bound synthetic OpenAI draft completed; no decision was approved.")
+    elif args.test_operator:
+        _assert_fixture_outcome(
+            service,
+            export_file=export_file,
+            skip_stale=args.skip_stale,
+        )
+        print(f"Ready decision export: {export_file}")
+        if not args.skip_stale:
+            print("The same guide invocation then changed criteria and recorded stale state.")
+
+    print(f"Demo root preserved at: {root}")
     return 0
 
 

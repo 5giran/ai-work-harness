@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ai_work_harness.decision.canonical import (
     canonical_json_bytes,
@@ -20,11 +20,13 @@ from ai_work_harness.decision.canonical import (
 )
 from ai_work_harness.decision.domain import (
     derive_comparison,
+    final_decision_constraints,
     frame_is_confirmable,
     require_exact_fields,
     require_object,
     require_string,
     require_string_list,
+    review_completion_state,
     validate_candidates,
     validate_criteria,
     validate_evaluations,
@@ -33,6 +35,9 @@ from ai_work_harness.decision.domain import (
     validate_reviews,
 )
 from ai_work_harness.errors import HarnessError
+
+if TYPE_CHECKING:
+    from ai_work_harness.decision.guidance import ValidatedOperatorState
 
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 CONFIRMATION_REFS = {
@@ -248,6 +253,22 @@ def _artifact_dict(artifact: Any) -> dict[str, Any]:
         )
     }
     return json.loads(json.dumps(value))
+
+
+def _final_decision_semantics(payload: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Return the human-authored meaning, excluding core timestamps and bindings."""
+
+    acknowledgements = payload.get("risk_acknowledgements")
+    normalized_acknowledgements = (
+        tuple(sorted(acknowledgements)) if isinstance(acknowledgements, list) else ()
+    )
+    reason = payload.get("reason")
+    return (
+        payload.get("disposition"),
+        payload.get("candidate_id"),
+        reason.strip() if isinstance(reason, str) else reason,
+        normalized_acknowledgements,
+    )
 
 
 def _serialized_mutation(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -488,9 +509,12 @@ class DecisionService:
         *,
         expected_artifact_sha: str,
         expected_parent: str,
+        method: str = "digest_challenge",
     ) -> dict[str, Any]:
         if subject_type not in SUBJECT_REFS:
             raise HarnessError("INVALID_CONFIRMATION_SUBJECT", "Unknown confirmation subject")
+        if method not in {"digest_challenge", "guided_semantic_review"}:
+            raise HarnessError("INVALID_CONFIRMATION_METHOD", "Unknown confirmation method")
         current = self._current()
         refs = _snapshot_refs(current)
         ref_name = SUBJECT_REFS[subject_type]
@@ -511,7 +535,7 @@ class DecisionService:
             "subject_sha256": subject_sha,
             "actor_label": "local_operator",
             "identity_verified": False,
-            "method": "digest_challenge",
+            "method": method,
             "confirmed_at": _timestamp(self.clock()),
         }
         _, digest = self._create_artifact(
@@ -877,7 +901,13 @@ class DecisionService:
         expected_parent: str,
         provider: str = "openai",
         model: str | None = None,
+        method: str = "digest_challenge",
     ) -> dict[str, Any]:
+        if method not in {"digest_challenge", "guided_exact_phrase"}:
+            raise HarnessError(
+                "INVALID_CONFIRMATION_METHOD",
+                "Unknown outbound consent method",
+            )
         current = self._current()
         if _snapshot_sha(current) != expected_parent:
             raise HarnessError(
@@ -918,7 +948,7 @@ class DecisionService:
             "subject_sha256": manifest_sha,
             "actor_label": "local_operator",
             "identity_verified": False,
-            "method": "digest_challenge",
+            "method": method,
             "confirmed_at": _timestamp(self.clock()),
             "outbound_manifest": manifest,
         }
@@ -1027,6 +1057,15 @@ class DecisionService:
         current = self._current()
         refs = _snapshot_refs(current)
         evaluation_sha = self._require_ref(refs, "evaluation_set")
+        if "evaluation_review_set" in refs:
+            active_reviews = _artifact_payload(self._read(refs, "evaluation_review_set"))["reviews"]
+            if any(review["outcome"] == "request_revision" for review in active_reviews):
+                raise HarnessError(
+                    "EVALUATION_REVISION_REQUIRED",
+                    "Import a new evaluation before recording another review",
+                    details={"evaluation_sha256": evaluation_sha},
+                    exit_code=3,
+                )
         evaluation_artifact = self._read(refs, "evaluation_set")
         evaluation_payload = _artifact_payload(evaluation_artifact)
         criteria = _artifact_payload(self._read(refs, "criteria_set"))["criteria"]
@@ -1071,8 +1110,27 @@ class DecisionService:
         if "evaluation_review_set" in refs:
             review_sha = refs["evaluation_review_set"]
             reviews = _artifact_payload(self._read(refs, "evaluation_review_set"))["reviews"]
-        if producer_kind in {"fixture", "openai", "agent_import"} and review_sha is None:
-            raise HarnessError("REVIEW_REQUIRED", "Agent-authored evaluations require review")
+        completion = review_completion_state(
+            evaluation_cells={
+                (item["candidate_id"], item["criterion_id"]): item for item in evaluations
+            },
+            criteria={item["criterion_id"]: item for item in criteria},
+            producer_kind=producer_kind,
+            reviews=reviews,
+        )
+        if completion.revision_pending:
+            raise HarnessError(
+                "EVALUATION_REVISION_REQUIRED",
+                "A requested revision requires a new evaluation before comparison",
+                details={"cells": [list(item) for item in completion.revision_required_cell_ids]},
+                exit_code=3,
+            )
+        if not completion.complete:
+            raise HarnessError(
+                "REVIEW_REQUIRED",
+                "All agent-authored must/high cells require completed review",
+                details={"cells": [list(item) for item in completion.pending_cell_ids]},
+            )
         result = derive_comparison(
             candidates=candidates,
             criteria=criteria,
@@ -1699,18 +1757,17 @@ class DecisionService:
         acknowledgements = set(acknowledgement_items)
         current = self._current()
         refs = _snapshot_refs(current)
+        if "final_decision" in refs:
+            active_final = _artifact_payload(self._read(refs, "final_decision"))
+            if _final_decision_semantics(active_final) == _final_decision_semantics(document):
+                raise HarnessError(
+                    "FINAL_DECISION_UNCHANGED",
+                    "The final decision must change semantically before it is recorded again",
+                    details={"final_decision_sha256": refs["final_decision"]},
+                    exit_code=3,
+                )
         comparison_sha = self._require_ref(refs, "comparison")
         comparison = _artifact_payload(self._read(refs, "comparison"))
-        valid_acknowledgements = {
-            f"{cell['candidate_id']}/{cell['criterion_id']}" for cell in comparison["matrix"]
-        }
-        unknown_acknowledgements = sorted(acknowledgements - valid_acknowledgements)
-        if unknown_acknowledgements:
-            raise HarnessError(
-                "UNKNOWN_REFERENCE",
-                "Risk acknowledgements must reference comparison cells",
-                details={"risk_acknowledgements": unknown_acknowledgements},
-            )
         selected = document["candidate_id"]
         if disposition == "select":
             if selected not in comparison["eligible_candidate_ids"]:
@@ -1718,66 +1775,44 @@ class DecisionService:
                     "INELIGIBLE_FINAL_DECISION",
                     "Selected candidate fails a must gate",
                 )
-            relevant = {selected}
         elif selected is not None:
             raise HarnessError("INVALID_FINAL_DECISION", "Only select accepts candidate_id")
-        else:
-            relevant = (
-                set(comparison["eligible_candidate_ids"]) if disposition == "reject_all" else set()
-            )
         evaluation_artifact = self._read(refs, "evaluation_set")
         producer_kind = _artifact_producer_kind(evaluation_artifact)
-        required_risks = {
-            f"{cell['candidate_id']}/{cell['criterion_id']}"
-            for cell in comparison["matrix"]
-            if cell["candidate_id"] in relevant
-            and (
-                (cell["priority"] == "high" and cell["effective_assessment"] != "meets")
-                or (
-                    producer_kind in {"fixture", "openai", "agent_import"}
-                    and cell["priority"] in {"medium", "low"}
-                    and cell["review_status"] in {"not_required", "request_revision"}
-                )
+        constraints = final_decision_constraints(
+            comparison=comparison,
+            producer_kind=producer_kind,
+            disposition=disposition,
+            candidate_id=selected,
+        )
+        unknown_acknowledgements = constraints.unknown_acknowledgement_cell_ids(acknowledgements)
+        if unknown_acknowledgements:
+            raise HarnessError(
+                "UNKNOWN_REFERENCE",
+                "Risk acknowledgements must reference comparison cells",
+                details={"risk_acknowledgements": list(unknown_acknowledgements)},
             )
-        }
-        missing = sorted(required_risks - acknowledgements)
+        missing = constraints.missing_required_risk_acknowledgement_cell_ids(acknowledgements)
         if missing:
             raise HarnessError(
                 "RISK_ACKNOWLEDGEMENT_REQUIRED",
                 "Final decision must acknowledge unresolved evaluation risks",
-                details={"missing": missing},
+                details={"missing": list(missing)},
             )
-        if disposition == "reject_all" and relevant:
-            risk_cells = {
-                f"{cell['candidate_id']}/{cell['criterion_id']}"
-                for cell in comparison["matrix"]
-                if cell["effective_assessment"] != "meets"
-                or (
-                    producer_kind in {"fixture", "openai", "agent_import"}
-                    and cell["priority"] in {"medium", "low"}
-                    and cell["review_status"] in {"not_required", "request_revision"}
-                )
-            }
-            acknowledged_by_candidate = {
-                candidate_id: {
-                    item.removeprefix(f"{candidate_id}/")
-                    for item in acknowledgements
-                    if item.startswith(f"{candidate_id}/") and item in risk_cells
-                }
-                for candidate_id in relevant
-            }
-            shared_risks = set.intersection(*acknowledged_by_candidate.values())
-            if not shared_risks:
-                raise HarnessError(
-                    "REJECT_ALL_SHARED_RISK_REQUIRED",
-                    "reject_all must name at least one shared risk for every eligible candidate",
-                    details={
-                        "eligible_candidate_ids": sorted(relevant),
-                        "acknowledged_by_candidate": {
-                            key: sorted(value) for key, value in acknowledged_by_candidate.items()
-                        },
+        if not constraints.reject_all_shared_risk_satisfied(acknowledgements):
+            acknowledged_by_candidate = constraints.acknowledged_risk_criterion_ids_by_candidate(
+                acknowledgements
+            )
+            raise HarnessError(
+                "REJECT_ALL_SHARED_RISK_REQUIRED",
+                "reject_all must name at least one shared risk for every eligible candidate",
+                details={
+                    "eligible_candidate_ids": list(constraints.relevant_candidate_ids),
+                    "acknowledged_by_candidate": {
+                        key: list(value) for key, value in acknowledged_by_candidate.items()
                     },
-                )
+                },
+            )
         recommendation_relation = "no_recommendation"
         parents = {"comparison": comparison_sha}
         if "recommendation" in refs:
@@ -1832,6 +1867,17 @@ class DecisionService:
                 exit_code=3,
             )
         refs = _snapshot_refs(current)
+        if "human_approval" in refs:
+            approval = _artifact_payload(self._read(refs, "human_approval"))
+            raise HarnessError(
+                "ACTIVE_APPROVAL_EXISTS",
+                "Change the final decision or an upstream artifact before creating a new challenge",
+                details={
+                    "approval_sha256": refs["human_approval"],
+                    "disposition": approval["disposition"],
+                },
+                exit_code=3,
+            )
         final_sha = self._require_ref(refs, "final_decision")
         final_decision = _artifact_payload(self._read(refs, "final_decision"))
         if disposition == "approved" and final_decision["disposition"] not in {
@@ -2019,6 +2065,7 @@ class DecisionService:
             manifest = payload.get("outbound_manifest")
             if (
                 payload.get("subject_type") != "outbound-manifest"
+                or payload.get("method") not in {"digest_challenge", "guided_exact_phrase"}
                 or not isinstance(manifest, dict)
                 or digest_json(manifest) != payload.get("subject_sha256")
             ):
@@ -2327,6 +2374,181 @@ class DecisionService:
 
     def status(self) -> dict[str, Any]:
         return self._status_for_snapshot(self._current())
+
+    def read_operator_state(
+        self,
+        snapshot_sha256: str | None = None,
+    ) -> ValidatedOperatorState:
+        """Return one immutable, fail-closed model for current or an explicit snapshot."""
+
+        from ai_work_harness.decision.guidance import (
+            ApprovalChallengeBinding,
+            ValidatedOperatorState,
+        )
+
+        snapshot = (
+            self.store.load_snapshot(snapshot_sha256)
+            if snapshot_sha256 is not None
+            else self._current()
+        )
+        snapshot_sha = _snapshot_sha(snapshot)
+        # Verify by the pinned digest.  A concurrent pointer move does not change
+        # which graph this query plans from, and integrity failures are not
+        # converted into a best-effort status response.
+        self.verify(snapshot_sha)
+        refs = _snapshot_refs(snapshot)
+        artifacts: dict[str, dict[str, Any]] = {}
+        for ref_name, digest in refs.items():
+            artifact = self.store.read_artifact(digest)
+            artifacts[ref_name] = {
+                "artifact_type": getattr(artifact, "artifact_type", ref_name.replace("_", "-")),
+                "producer_kind": _artifact_producer_kind(artifact),
+                "producer": _thaw(getattr(artifact, "producer", {})),
+                "payload": _artifact_payload(artifact),
+            }
+
+        approval = artifacts["human_approval"]["payload"] if "human_approval" in artifacts else None
+        final_decision = (
+            artifacts["final_decision"]["payload"] if "final_decision" in artifacts else None
+        )
+        decision_complete = bool(
+            approval
+            and approval["disposition"] == "approved"
+            and final_decision
+            and final_decision["disposition"] in {"select", "reject_all"}
+        )
+        ready = bool(
+            decision_complete
+            and final_decision is not None
+            and final_decision["disposition"] == "select"
+        )
+        stale_reasons = (
+            () if "human_approval" in refs else tuple(self._historical_stale_reasons(snapshot))
+        )
+        active_challenge = None
+        if "approval_challenge" in refs:
+            active_challenge = ApprovalChallengeBinding.from_mapping(
+                artifacts["approval_challenge"]["payload"],
+                challenge_sha256=refs["approval_challenge"],
+                challenge_snapshot_sha256=snapshot_sha,
+            )
+        outbound_consent_operation = None
+        if "agent_consent" in refs:
+            manifest = artifacts["agent_consent"]["payload"].get("outbound_manifest")
+            if isinstance(manifest, dict) and manifest.get("operation") in {
+                "evaluations",
+                "recommendation",
+            }:
+                outbound_consent_operation = manifest["operation"]
+        record = getattr(snapshot, "snapshot", snapshot)
+        return ValidatedOperatorState(
+            session_id=self.session_id,
+            generation=record.generation,
+            pinned_snapshot_sha256=snapshot_sha,
+            lifecycle_state=self._lifecycle_state(refs),
+            refs=refs,
+            artifacts=artifacts,
+            decision_complete=decision_complete,
+            ready=ready,
+            stale_reasons=stale_reasons,
+            active_challenge=active_challenge,
+            outbound_consent_operation=outbound_consent_operation,
+        )
+
+    def operator_plan(self) -> dict[str, Any]:
+        """Return the sanitized read-only operator-plan.v1 value."""
+
+        from ai_work_harness.decision.guidance import plan_operator_next
+
+        state = self.read_operator_state()
+        plan = plan_operator_next(state, observed_at=self.clock())
+        return {
+            "ok": True,
+            "session_id": self.session_id,
+            "generation": state.generation,
+            "snapshot_sha256": state.pinned_snapshot_sha256,
+            **plan.to_public_dict(),
+        }
+
+    def read_source_excerpt(
+        self,
+        *,
+        snapshot_sha256: str,
+        source_id: str,
+        start_line: int,
+        end_line: int,
+    ) -> dict[str, Any]:
+        """Read and hash one line-bounded excerpt from a verified pinned snapshot."""
+
+        if (
+            not isinstance(start_line, int)
+            or isinstance(start_line, bool)
+            or not isinstance(end_line, int)
+            or isinstance(end_line, bool)
+            or start_line < 1
+            or end_line < start_line
+        ):
+            raise HarnessError(
+                "INVALID_SOURCE_LOCATOR",
+                "Source line range must be 1-based, inclusive, and ordered",
+            )
+        snapshot = self.store.load_snapshot(snapshot_sha256)
+        self.verify(snapshot_sha256)
+        refs = _snapshot_refs(snapshot)
+        manifest = _artifact_payload(self._read(refs, "source_manifest"))
+        source = next(
+            (item for item in manifest["sources"] if item["source_id"] == source_id),
+            None,
+        )
+        if source is None:
+            raise HarnessError(
+                "UNKNOWN_REFERENCE",
+                "Source excerpt references an unknown source",
+                details={"source_id": source_id},
+            )
+        raw = self.store.read_object(source["blob_sha256"])
+        try:
+            lines = raw.decode("utf-8", errors="strict").splitlines(keepends=True)
+        except UnicodeDecodeError as exc:  # pragma: no cover - capture validates this
+            raise HarnessError(
+                "CORRUPT_SOURCE",
+                "Captured source is no longer UTF-8",
+                exit_code=5,
+            ) from exc
+        if end_line > len(lines):
+            raise HarnessError(
+                "INVALID_SOURCE_LOCATOR",
+                "Source line range exceeds the captured source",
+                details={"line_count": len(lines), "end_line": end_line},
+            )
+        excerpt_bytes = "".join(lines[start_line - 1 : end_line]).encode("utf-8")
+        return self._result(
+            snapshot,
+            source_id=source_id,
+            start_line=start_line,
+            end_line=end_line,
+            excerpt=excerpt_bytes.decode("utf-8"),
+            excerpt_sha256=sha256_bytes(excerpt_bytes),
+        )
+
+    def preview_invalidation(
+        self,
+        *,
+        snapshot_sha256: str,
+        ref_name: str,
+    ) -> tuple[str, ...]:
+        """List active refs that a replacement would make stale, without writing."""
+
+        if ref_name not in DOWNSTREAM:
+            raise HarnessError(
+                "UNKNOWN_ARTIFACT_REF",
+                "Artifact does not define a replacement boundary",
+                details={"ref_name": ref_name},
+            )
+        snapshot = self.store.load_snapshot(snapshot_sha256)
+        self.verify(snapshot_sha256)
+        refs = _snapshot_refs(snapshot)
+        return tuple(sorted(set(refs).intersection(DOWNSTREAM[ref_name])))
 
     def _status_for_snapshot(self, snapshot: Any) -> dict[str, Any]:
         refs = _snapshot_refs(snapshot)

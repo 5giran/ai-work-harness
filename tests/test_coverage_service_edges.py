@@ -567,27 +567,17 @@ def test_reject_all_requires_shared_risk_and_is_complete_but_not_ready(tmp_path:
     assert status["ready"] is False
 
 
-def test_medium_revision_request_still_requires_risk_acknowledgement(tmp_path: Path) -> None:
+def test_medium_revision_request_blocks_comparison_until_new_evaluation(tmp_path: Path) -> None:
     service, _clock = _service(tmp_path, "medium-revision-risk")
-    parent = _build_comparison(
-        service,
-        tmp_path,
-        request_medium_revision=True,
-    )
-
-    with pytest.raises(HarnessError) as missing:
-        service.import_final_decision(
-            {
-                "disposition": "select",
-                "candidate_id": "one",
-                "reason": "Select one while explicitly accepting the unresolved draft.",
-                "risk_acknowledgements": ["one/quality"],
-            },
-            expected_parent=parent,
+    with pytest.raises(HarnessError) as revision:
+        _build_comparison(
+            service,
+            tmp_path,
+            request_medium_revision=True,
         )
 
-    assert missing.value.code == "RISK_ACKNOWLEDGEMENT_REQUIRED"
-    assert missing.value.details["missing"] == ["one/latency"]
+    assert revision.value.code == "EVALUATION_REVISION_REQUIRED"
+    assert revision.value.details["cells"] == [["one", "latency"]]
 
 
 def test_intervening_agent_consent_invalidates_approval_challenge(tmp_path: Path) -> None:

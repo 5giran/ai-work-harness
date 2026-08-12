@@ -21,15 +21,27 @@
     "subject_sha256": {"$ref": "#/$defs/sha256"},
     "actor_label": {"const": "local_operator"},
     "identity_verified": {"const": false},
-    "method": {"const": "digest_challenge"},
+    "method": {
+      "enum": ["digest_challenge", "guided_semantic_review", "guided_exact_phrase"]
+    },
     "confirmed_at": {"$ref": "#/$defs/timestamp"},
     "outbound_manifest": {"$ref": "#/$defs/outbound-manifest"}
   },
   "allOf": [
     {
       "if": {"properties": {"subject_type": {"const": "outbound-manifest"}}},
-      "then": {"required": ["outbound_manifest"]},
-      "else": {"not": {"required": ["outbound_manifest"]}}
+      "then": {
+        "required": ["outbound_manifest"],
+        "properties": {
+          "method": {"enum": ["digest_challenge", "guided_exact_phrase"]}
+        }
+      },
+      "else": {
+        "not": {"required": ["outbound_manifest"]},
+        "properties": {
+          "method": {"enum": ["digest_challenge", "guided_semantic_review"]}
+        }
+      }
     }
   ],
   "$defs": {

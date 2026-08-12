@@ -15,6 +15,8 @@ RecommendationProvider.generate(FrozenDecisionContext) -> RecommendationDraft
 provider에는 repository/store handle, confirmation/review/final/approval callback을 주지 않는다.
 반환값은 closed payload schema와 현재 candidate/criterion/evidence binding을 통과한 뒤에만
 core가 새 snapshot으로 commit한다. 실패한 provider 호출은 pointer를 바꾸지 않는다.
+v0.5의 raw CLI와 guided TTY는 이 port와 service를 함께 사용하며, guided layer가 provider에
+추가 권한이나 저장소 접근을 주지 않는다.
 
 ## Fixture
 
@@ -36,17 +38,49 @@ core가 새 snapshot으로 commit한다. 실패한 provider 호출은 pointer를
 - refusal, malformed output, tool limit, credential/model unavailable에는 자동 fallback 없음
 
 환경변수 model override는 outbound manifest에 새 model 값으로 들어가므로 이전 consent를
-재사용할 수 없다. live 실행 전 preview가 provider/model/prompt/input/source digest와 한도를
-계산하고, 로컬 운영자는 전체 manifest digest에 consent해야 한다. 성공한 실행만 agent-run
-binding을 기록한다. validate replay는 외부 호출 없이 기록된 input/output schema와 digest를
-다시 검사한다.
+재사용할 수 없다. 성공한 실행만 agent-run binding을 기록한다. validate replay는 외부 호출
+없이 기록된 input/output schema와 digest를 다시 검사한다.
 
-consent는 manifest의 operation, model, prompt/input digest, 한도와 입력 snapshot을 함께
-binding하며, 그 consent를 active ref로 가진 정확한 current snapshot에서만 실행할 수 있다.
-pointer를 바꾸는 mutation이나 provider 설정 변경 뒤에는 새 preview와 consent가 필요하다.
-한 consent는 성공한 결과 commit 한 번에만 사용되고 그 commit에서 active consent ref가
-제거된다. provider 실패는 pointer를 바꾸거나 consent를 소비하지 않으므로 동일 manifest에
-대한 명시적 retry는 가능하다.
+### Exact consent: raw와 guided
+
+live 실행 전 read-only preview는 provider/model/operation, prompt와 input digest, 입력 snapshot,
+source digest, evidence·excerpt 크기와 모든 실행 한도를 포함한 closed outbound manifest와 full
+manifest SHA-256을 계산한다. raw protocol은 그 full digest를
+`agent consent --expected-manifest-sha`로 제출하고 `method=digest_challenge`를 기록한다.
+
+guide는 raw source, excerpt 본문, source digest 전체 목록과 full manifest digest를 출력하지
+않는다. 대신 operation/provider/model, prompt ID와 prompt/input fingerprint, excerpt byte 수,
+evidence 수와 12자 manifest fingerprint를 보여주고 다음 정확 문구를 요구한다.
+
+```text
+SEND OPENAI <12자 manifest fingerprint>
+```
+
+문구가 일치하면 `GuidedOperator`가 사용자가 보던 pinned preview의 full digest를 내부 전달하고
+`method=guided_exact_phrase`인 별도 consent snapshot을 만든다. service는 네트워크 호출 전에
+같은 `expected_parent`에서 manifest를 다시 계산해 full digest가 정확히 일치하는지 검증한다.
+따라서 12자 문구는 사용자 확인 표현이고, 저장·실행 binding은 full SHA-256이다.
+
+consent는 manifest의 operation, provider/model, prompt/input/source digest, 모든 한도와 입력
+snapshot을 함께 binding하며, 그 consent를 `agent_consent` active ref로 가진 정확한 current
+snapshot에서만 실행할 수 있다. pointer를 바꾸는 upstream mutation이나 provider 설정 변경
+뒤에는 새 preview와 consent가 필요하다. 한 consent는 성공한 result와 agent-run commit 한
+번에만 사용되고 그 commit에서 active consent ref가 제거된다.
+
+### Active-consent retry
+
+timeout, refusal 또는 transport/model 실패가 result commit 전에 끝나면 pointer는 consent
+snapshot에 머물고 `agent_consent`도 소비되지 않는다. guided planner는 이 상태를 일반
+evaluation/recommendation 단계보다 먼저 인식해 같은 operation의 retry 또는 local JSON/MCP·agent
+import를 제시한다. retry는 반드시 운영자가 다시 선택하며 preview나 consent snapshot을 새로
+만들지 않는다. 저장된 input snapshot과 manifest로 context와 provider 설정을 복원하고 active
+consent/full manifest binding을 다시 검증한 뒤 같은 요청만 실행한다.
+
+성공하면 result와 agent-run을 한 snapshot에 commit하고 consent ref를 제거한다. local 또는
+agent import를 선택하면 해당 result mutation의 stale graph가 기존 consent/run ref를
+무효화한다. guide가 실패한 호출을 자동 재개하거나 다른 provider/fixture로 fallback하지는
+않는다. 다만 한 번의 명시적 OpenAI run 내부에서는 위 bounded policy대로 429, 5xx와 network
+error만 최대 2회 자동 재시도한다.
 
 공식 구현 근거는 [OpenAI model guide](https://developers.openai.com/api/docs/guides/latest-model),
 [GPT-5.6 Luna guidance](https://developers.openai.com/api/docs/guides/model-guidance?model=gpt-5.6-luna),
