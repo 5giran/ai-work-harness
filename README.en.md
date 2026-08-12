@@ -7,20 +7,59 @@
 **A local decision harness that keeps AI evaluation and recommendations inside a
 human-confirmed problem, candidate, criteria, and evidence boundary.**
 
-```bash
-ai-work-harness --root /path/to/project decision guide triage-ops --lang en
-```
-
 AI Work Harness does not let AI make the decision. AI can draft evaluations and a
 recommendation; a person confirms the decision contract, reviews important cells, records the
 final decision, and approves it. When an input or criterion changes, the old decision is not
 silently reused: its downstream references are removed and the reason is recorded as stale.
 
+[Project overview](#project-overview) · [Quick start](#quick-start) · [Workflow](#workflow) ·
+[Advanced / Automation](#advanced--automation) · [Verification](#verification) ·
+[Project story](docs/project-story.md)
+
 > The current release is `0.5.0` alpha for one local operator. It does not claim identity
 > authentication, a signed ledger, protection against a malicious full local rewrite, or a
 > production-ready remote service.
 
-## Why this exists
+## Project overview
+
+### Problem it addresses
+
+Fast AI analysis and recommendations still leave operational questions unanswered:
+
+- What problem was being solved, and who confirmed that framing?
+- Which candidates were compared against which criteria and source-backed evidence?
+- Why did the human choose something different from the AI recommendation?
+- Is an old approval still valid after an input, criterion, or evaluation changes?
+
+AI Work Harness enforces answers with schemas, immutable snapshots, state transitions, and a
+verifier rather than relying on documentation convention. It targets reviewable choices—such as
+an operating model, model adoption, or internal tool selection—where **AI assistance is useful but
+decision accountability must remain human**.
+
+An operator starts or resumes the decision through one guided command:
+
+```bash
+ai-work-harness --root /path/to/project decision guide triage-ops --lang en
+```
+
+The guide presents only the next required action and carries snapshot hashes, artifact digests,
+challenge IDs, and nonces internally. The explicit raw protocol remains available as a separate
+automation and forensic interface.
+
+### Core guarantees
+
+| Boundary | Implemented control |
+|---|---|
+| Human authority | Frame, candidate, and criteria confirmation; Must/High review; final decision; and approval are separate events. |
+| AI authority | Providers and MCP create evaluation or recommendation drafts but cannot access human gates. |
+| Evidence | Source bytes and line locators are SHA-256-bound; inference and user assertions remain distinct from observations. |
+| Recommendation vs. decision | Recommendations are non-binding; the human relationship is recorded as `same`, `different`, or `no_recommendation`. |
+| Change detection | An upstream change removes downstream active refs and records a precise stale reason. |
+| Concurrent writes | Full-parent CAS, a five-second lock, and atomic pointer replacement prevent automatic reapplication. |
+| Approval | The challenge binds the bundle digest, snapshot, nonce, disposition, and expiry. |
+| Readiness | `ready=true` requires an approved `select` and full verification of that same pinned snapshot. |
+
+### Background
 
 The project began as a problem-adaptive harness for
 [2026 Cofathon](https://cofathon.getcofa.com/). Its v1 workflow preserved the prompt, confirmed
@@ -39,17 +78,12 @@ The portfolio evidence is the engineering response to two problems found through
 
 See [Project story](docs/project-story.md) for the longer history and claim boundaries.
 
-## What it controls
+### Technology
 
-| Question | Implemented control |
-|---|---|
-| Who fixed the problem and criteria? | Draft and human confirmation are separate snapshots. |
-| What did an AI evaluation cite? | Source bytes, line locator, and excerpt SHA-256 are bound to evidence. |
-| Did a person review important results? | AI/Fixture Must and High cells require concur, override, or revision request. |
-| May the human disagree with AI? | Yes. The relation is recorded as `same`, `different`, or `no_recommendation`. |
-| What happens after an upstream change? | Downstream active refs are removed and a precise stale reason is recorded. |
-| What if two writers race? | Full-parent CAS, a writer lock, and no automatic reapplication. |
-| What does `ready=true` mean? | An approved `select` and full verification of that same pinned snapshot. |
+- Python 3.11/3.12, frozen dataclasses, and JSON Schema Draft 2020-12
+- RFC 8785 JCS and a SHA-256 content-addressed object/immutable snapshot store
+- Optional OpenAI Responses API adapter and official-Python-SDK stdio MCP server
+- Read-only offline viewer built with Vite, Vanilla TypeScript, Ajv, and Playwright
 
 ## Quick start
 

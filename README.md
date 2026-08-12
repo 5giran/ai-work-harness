@@ -7,18 +7,56 @@
 **사람이 확정한 문제·후보·기준과 출처가 있는 근거 안에서 AI가 평가와 추천을 만들도록
 통제하는 로컬 의사결정 하네스**
 
-```bash
-ai-work-harness --root /path/to/project decision guide triage-ops
-```
-
 AI Work Harness는 AI가 결정을 대신하게 하지 않는다. AI는 초안을 만들고, 사람은 문제를
 확인하고 평가를 검토하며 최종 결정과 승인을 기록한다. 입력이나 기준이 바뀌면 이전 결정은
 조용히 재사용되지 않고 정확한 사유와 함께 stale 처리된다.
 
+[프로젝트 소개](#프로젝트-소개) · [빠른 시작](#빠른-시작) · [작동 방식](#작동-방식) ·
+[Advanced / Automation](#advanced--automation) · [검증](#검증) ·
+[프로젝트 이야기](docs/project-story.md)
+
 > 현재 버전은 `0.5.0` alpha다. 로컬 단일 운영자용 도구이며 사용자 인증, 서명 원장,
 > 악의적 로컬 재작성 방지 또는 production-ready 원격 서비스를 주장하지 않는다.
 
-## 왜 만들었나
+## 프로젝트 소개
+
+### 해결하는 문제
+
+AI가 분석과 추천을 빠르게 만들어도 실제 결정에서는 다음 질문이 남는다.
+
+- 무엇을 해결하려 했고 누가 그 문제 정의를 확인했는가?
+- 어떤 후보를 어떤 기준과 출처가 있는 근거로 비교했는가?
+- AI 추천과 사람이 선택한 결과가 왜 달랐는가?
+- 입력·기준·평가가 바뀐 뒤에도 이전 결정을 승인된 상태로 볼 수 있는가?
+
+AI Work Harness는 이 질문을 문서 작성 관례가 아니라 schema, 불변 snapshot, state transition과
+verifier로 강제한다. 고객지원 운영 방식, 모델 도입, 내부 도구 선택처럼 **AI의 도움은
+필요하지만 결정 책임은 사람이 가져야 하는 비교·검토 업무**가 대상이다.
+
+운영자는 하나의 단계형 명령으로 현재 결정부터 이어서 작업한다.
+
+```bash
+ai-work-harness --root /path/to/project decision guide triage-ops
+```
+
+guide는 현재 상태에서 필요한 다음 행동만 안내하고 snapshot SHA, artifact digest, challenge
+ID와 nonce를 내부 전달한다. 복잡한 raw protocol은 없애지 않고 자동화와 정밀 운영용으로
+분리했다.
+
+### 핵심 보장
+
+| 경계 | 구현된 통제 |
+|---|---|
+| 인간 권한 | frame·후보·기준 확인, Must/High 검토, 최종 결정과 승인을 별도 event로 기록 |
+| AI 권한 | provider와 MCP는 평가·추천 draft만 생성하고 인간 gate에는 접근하지 못함 |
+| 근거 | source bytes와 line locator를 SHA-256으로 묶고 추론·사용자 주장을 사실 근거와 구분 |
+| 추천과 결정 | 추천은 비구속적이며 인간 결정과의 관계를 `same|different|no_recommendation`으로 기록 |
+| 변경 감지 | upstream 변경 시 downstream 활성 참조를 제거하고 구체적인 stale reason을 기록 |
+| 동시 쓰기 | full expected-parent, 5초 writer lock과 atomic pointer replace로 자동 재적용 금지 |
+| 승인 | bundle digest, snapshot, nonce와 만료 시각을 challenge에 binding |
+| readiness | 승인된 `select`와 동일 pinned snapshot의 전체 검증이 성공할 때만 `ready=true` |
+
+### 배경
 
 이 프로젝트는 [2026 Cofathon](https://cofathon.getcofa.com/)에서 낯선 과제를 안전하게
 시작하기 위한 하네스로 출발했다. 원문을 먼저 보존하고, 문제를 확인한 뒤, 승인된 경로에서만
@@ -28,7 +66,7 @@ AI Work Harness는 AI가 결정을 대신하게 하지 않는다. AI는 초안�
 왜 다른 선택을 했는가”, “기준이 바뀐 뒤 이전 승인은 아직 유효한가”를 다시 설명하기
 어려웠다. 그래서 실행 경로 선택기를 다음 의사결정을 위한 control plane으로 확장했다.
 
-이 저장소의 포트폴리오 근거는 행사 결과가 아니라, 실제 사용에서 드러난 두 문제를 코드로
+이 저장소의 근거는 행사 결과가 아니라, 실제 사용에서 드러난 두 문제를 코드로
 해결한 과정에 있다.
 
 - 안전한 raw 프로토콜이 사람에게 너무 복잡했던 문제는 resumable guided CLI로 해결했다.
@@ -36,17 +74,12 @@ AI Work Harness는 AI가 결정을 대신하게 하지 않는다. AI는 초안�
 
 긴 배경과 주장 범위는 [프로젝트 이야기](docs/project-story.md)에 정리했다.
 
-## 무엇을 보장하나
+### 기술 구성
 
-| 질문 | 구현된 통제 |
-|---|---|
-| 누가 문제와 기준을 확정했나? | frame·후보·기준의 초안과 인간 확인을 서로 다른 snapshot으로 기록 |
-| AI 평가는 무엇을 인용했나? | source bytes, 1-based line locator와 excerpt SHA-256을 evidence에 binding |
-| 중요한 평가를 사람이 봤나? | AI/Fixture Must·High cell에 concur, override 또는 revision 요청 강제 |
-| 추천과 최종 선택이 달라도 되나? | 추천은 비구속적이며 인간 결정과의 관계를 `same|different|no_recommendation`으로 기록 |
-| 기준이 바뀌면 어떻게 되나? | downstream 활성 ref를 제거하고 `criteria_set_changed` 같은 stale reason 기록 |
-| 두 writer가 동시에 쓰면? | full expected-parent CAS, 5초 lock, atomic pointer replace로 자동 재적용 금지 |
-| `ready=true`를 믿어도 되나? | 승인된 `select`와 동일 pinned snapshot의 전체 verify가 함께 성공해야 함 |
+- Python 3.11/3.12, frozen dataclass, JSON Schema Draft 2020-12
+- RFC 8785 JCS, SHA-256 content-addressed object와 immutable snapshot 저장소
+- 선택적 OpenAI Responses API adapter와 공식 Python SDK 기반 stdio MCP
+- Vite, Vanilla TypeScript, Ajv, Playwright 기반 read-only 오프라인 viewer
 
 ## 빠른 시작
 
