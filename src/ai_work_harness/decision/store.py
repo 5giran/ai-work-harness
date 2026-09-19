@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 import threading
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ from .models import (
     SystemClock,
     UUID4IdSource,
     VerificationReport,
+    WriterLockReport,
     format_timestamp,
     validate_digest,
     validate_event_id,
@@ -516,15 +519,87 @@ class DecisionStore:
         all_objects, object_path_issues = self._discover_digests(self.paths.objects_root)
         issues.extend(snapshot_path_issues)
         issues.extend(object_path_issues)
+        writer_lock = self._inspect_writer_lock()
         return DoctorReport(
-            ok=not issues,
+            ok=not issues and writer_lock.state == "absent",
             current_snapshot_sha256=current_sha,
             reachable_snapshots=tuple(sorted(reachable_snapshots)),
             orphan_snapshots=tuple(sorted(all_snapshots - reachable_snapshots)),
             referenced_objects=tuple(sorted(referenced_objects)),
             orphan_objects=tuple(sorted(all_objects - referenced_objects)),
             issues=tuple(issues),
+            writer_lock=writer_lock,
         )
+
+    def _inspect_writer_lock(self) -> WriterLockReport:
+        """Observe a lock without acquiring, removing, or claiming ownership of it."""
+
+        path = self.paths.writer_lock
+        try:
+            self._assert_safe_read_path(path)
+            before = path.lstat()
+        except FileNotFoundError:
+            return WriterLockReport(state="absent")
+        except (HarnessError, OSError):
+            return WriterLockReport(state="unreadable", issue="LOCK_PATH_UNREADABLE")
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 4096:
+            return WriterLockReport(state="invalid", issue="INVALID_LOCK_METADATA")
+        try:
+            raw = self._read_regular_file(path, missing_code="LOCK_MISSING")
+            after = path.lstat()
+        except FileNotFoundError:
+            return WriterLockReport(state="changed", issue="LOCK_CHANGED_DURING_READ")
+        except HarnessError as exc:
+            if exc.code == "LOCK_MISSING":
+                return WriterLockReport(state="changed", issue="LOCK_CHANGED_DURING_READ")
+            return WriterLockReport(state="unreadable", issue="LOCK_PATH_UNREADABLE")
+        except OSError:
+            return WriterLockReport(state="unreadable", issue="LOCK_PATH_UNREADABLE")
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            return WriterLockReport(state="changed", issue="LOCK_CHANGED_DURING_READ")
+        try:
+            metadata = parse_json_bytes(raw, label="writer lock")
+            if not isinstance(metadata, dict) or set(metadata) != {"pid", "acquired_at"}:
+                raise ValueError("Invalid lock fields")
+            pid = metadata["pid"]
+            acquired_at = metadata["acquired_at"]
+            if (
+                not isinstance(pid, int)
+                or isinstance(pid, bool)
+                or not 0 < pid <= 2**31 - 1
+                or not isinstance(acquired_at, str)
+                or not acquired_at.endswith("Z")
+            ):
+                raise ValueError("Invalid lock metadata")
+            datetime.fromisoformat(acquired_at)
+        except (HarnessError, ValueError):
+            return WriterLockReport(state="invalid", issue="INVALID_LOCK_METADATA")
+        return WriterLockReport(
+            state="present",
+            pid=pid,
+            acquired_at=acquired_at,
+            owner_status=self._probe_lock_pid(pid),
+        )
+
+    @staticmethod
+    def _probe_lock_pid(pid: int) -> str:
+        # Signal zero is a read-only existence probe on POSIX. Do not use os.kill
+        # on Windows, where signals have different semantics. PID presence never
+        # establishes lock ownership (PID reuse); neither result permits deletion.
+        if os.name != "posix":
+            return "unknown"
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return "pid_absent"
+        except (OSError, OverflowError):
+            return "unknown"
+        return "pid_present"
 
     def _collect_session_reachability(self, current_sha: str) -> tuple[set[str], set[str]]:
         reachable_snapshots: set[str] = set()

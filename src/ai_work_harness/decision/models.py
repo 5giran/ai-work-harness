@@ -467,6 +467,15 @@ class VerificationReport:
 
 
 @dataclass(frozen=True)
+class WriterLockReport:
+    state: str
+    pid: int | None = None
+    acquired_at: str | None = None
+    owner_status: str = "unknown"
+    issue: str | None = None
+
+
+@dataclass(frozen=True)
 class DoctorReport:
     ok: bool
     current_snapshot_sha256: str | None
@@ -475,18 +484,21 @@ class DoctorReport:
     referenced_objects: tuple[str, ...]
     orphan_objects: tuple[str, ...]
     issues: tuple[IntegrityIssue, ...]
+    writer_lock: WriterLockReport | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return json.loads(
             json.dumps(
                 {
                     "ok": self.ok,
+                    "integrity_ok": not self.issues,
                     "current_snapshot_sha256": self.current_snapshot_sha256,
                     "reachable_snapshots": self.reachable_snapshots,
                     "orphan_snapshots": self.orphan_snapshots,
                     "referenced_objects": self.referenced_objects,
                     "orphan_objects": self.orphan_objects,
                     "issues": [issue.__dict__ for issue in self.issues],
+                    "writer_lock": self.writer_lock.__dict__ if self.writer_lock else None,
                 }
             )
         )

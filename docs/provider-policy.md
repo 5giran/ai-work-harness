@@ -41,6 +41,24 @@ v0.5의 raw CLI와 guided TTY는 이 port와 service를 함께 사용하며, gui
 재사용할 수 없다. 성공한 실행만 agent-run binding을 기록한다. validate replay는 외부 호출
 없이 기록된 input/output schema와 digest를 다시 검사한다.
 
+### 고정된 API 목적지
+
+OpenAI 요청의 base URL은 `https://api.openai.com/v1`로 명시적으로 고정한다.
+`OPENAI_BASE_URL`은 미설정이거나 위 주소(끝의 `/` 허용)일 때만 허용한다. 빈 값, 다른 host,
+path, query 또는 credential을 포함하는 값은 `UNSUPPORTED_OPENAI_ENDPOINT`(exit `4`)로
+거부하며 오류에 입력 URL을 그대로 노출하지 않는다. 공식 API 주소는
+[OpenAI quickstart](https://developers.openai.com/api/docs/quickstart)에 나온다.
+
+preview·consent·run에서 환경 설정을 검사하고, adapter는 SDK 생성 시 고정 base URL을 전달한다.
+injected/factory/cached client도 실제 `base_url`이 일치해야 하며, 각 요청과 자동 재시도 직전에
+환경 설정과 client 주소를 다시 검사한다. custom/regional endpoint는 지원하지 않는다.
+이 정책은 애플리케이션의 API 주소 제한이며 OS proxy, DNS, TLS 또는 임의 client 구현을
+격리하는 network sandbox는 아니다.
+
+artifact·manifest schema는 바꾸지 않는다. 새 요청은 고정 주소 정책을 적용하지만, 과거
+agent-run에 목적지 기록을 소급해서 추가하거나 과거 전송 주소가 검증됐다고 주장하지 않는다.
+과거 기록의 read-only verify는 현재 `OPENAI_BASE_URL` 설정에 의존하지 않는다.
+
 ### Exact consent: raw와 guided
 
 live 실행 전 read-only preview는 provider/model/operation, prompt와 input digest, 입력 snapshot,

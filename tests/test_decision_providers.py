@@ -98,6 +98,8 @@ class _FakeResponses:
 
 
 class _FakeClient:
+    base_url = "https://api.openai.com/v1/"
+
     def __init__(self, outcomes: list[Any]) -> None:
         self.responses = _FakeResponses(outcomes)
 

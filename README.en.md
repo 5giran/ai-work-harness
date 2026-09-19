@@ -57,6 +57,7 @@ automation and forensic interface.
 | Change detection | An upstream change removes downstream active refs and records a precise stale reason. |
 | Concurrent writes | Full-parent CAS, a five-second lock, and atomic pointer replacement prevent automatic reapplication. |
 | Approval | The challenge binds the bundle digest, snapshot, nonce, disposition, and expiry. |
+| Semantic verification | Rechecks reached-stage gates, evidence, evaluations, reviews, derived comparison, and final-decision rules on the pinned snapshot. |
 | Readiness | `ready=true` requires an approved `select` and full verification of that same pinned snapshot. |
 
 ### Background
@@ -169,7 +170,9 @@ Artifacts and snapshots are addressed by SHA-256 over RFC 8785 JCS bytes.
 
 Only `current.json` points to active state. A mutation fsyncs objects and the snapshot before
 atomically replacing that pointer. Crash orphans cannot become active state; `decision doctor`
-reports them but does not garbage-collect them.
+reports them but does not garbage-collect them. It reports a remaining writer lock separately
+from storage integrity and never removes it automatically. See the
+[recovery procedure](docs/operator-runbook.md#5-충돌과-실패-복구).
 
 ## OpenAI, MCP, and viewer
 
@@ -183,6 +186,9 @@ Install only the integrations you need:
 - Before OpenAI, the guide displays provider, model, prompt/input fingerprints, source excerpt
   bytes, and evidence count. No external request occurs before exact
   `SEND OPENAI <fingerprint>` consent.
+- OpenAI requests use the fixed `https://api.openai.com/v1` endpoint. Other `OPENAI_BASE_URL`
+  values are rejected before consent; the actual client endpoint is also checked before every
+  request. Custom endpoints are unsupported.
 - After timeout or refusal, the operator can retry the same consented manifest or choose a
   local/agent import. A changed manifest requires new consent; there is no automatic fallback.
 - The stdio MCP allowlist contains no confirm, review, final-decision, challenge, or approval

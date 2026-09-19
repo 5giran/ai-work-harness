@@ -229,6 +229,8 @@ class FakeResponses:
 
 
 class FakeOpenAIClient:
+    base_url = "https://api.openai.com/v1/"
+
     def __init__(self, response: dict[str, object]) -> None:
         self.responses = FakeResponses(response)
 

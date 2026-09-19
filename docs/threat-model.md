@@ -26,13 +26,14 @@ full digest 전달을 대신해도 raw gate를 제거하거나 약화하지 않�
 | 위협 | 통제 | 남는 위험 |
 |---|---|---|
 | stale write / guided replay | full expected-parent CAS, pinned operator cursor, 충돌 후 명시적 reload와 no-auto-retry | reload 뒤 새 semantic state를 운영자가 다시 검토해야 함 |
-| partial/crash write | fsync + atomic replace; immutable objects | orphan object가 남을 수 있음 |
-| artifact drift | JCS SHA-256, parent binding, pinned verifier | 전체 tree를 다시 쓸 수 있는 공격자는 새 digest도 만들 수 있음 |
+| partial/crash write | fsync + atomic replace; immutable objects; doctor의 별도 lock 진단 | orphan object와 writer lock이 남을 수 있음; 독립적인 writer 종료 확인 후 수동 복구 필요 |
+| artifact drift / schema-valid policy 위반 | JCS SHA-256, 필수 gate·parent, 평가·review 검증, comparison 재계산과 최종 결정 규칙 재검증 | 전체 tree를 다시 쓸 수 있는 공격자는 새 digest도 만들 수 있음 |
 | guided/raw drift | 같은 schema/service transition과 semantic graph equivalence test | UI rendering 오류는 사람이 잘못 확인하게 만들 수 있음 |
 | path traversal/symlink | safe ID와 regular-file 검증 | 신뢰된 운영자가 별도 도구로 filesystem을 변경할 수 있음 |
 | 근거 위조 | source locator byte hash와 provenance 분리 | source 내용 자체의 진실성은 별도 검증 대상 |
 | model overreach | draft-only provider port, no repository handle, consent 전 network 호출 금지 | prompt injection이 부정확한 draft를 만들 수 있어 인간 review 필요 |
 | outbound drift / consent replay | pinned preview, full manifest 재계산, exact consent method, active consent ref와 one-use result commit | guided 사용자는 full manifest 대신 요약과 12자 fingerprint를 보며, provider는 동의된 excerpt를 수신함 |
+| endpoint 설정 drift | 공식 API base URL 고정, preview·consent·run 환경 검사, client 주소와 매 요청·retry 직전 재검사 | OS proxy·DNS·TLS·임의 client 구현은 격리하지 않음; 과거 run의 목적지는 소급 증명하지 않음 |
 | MCP overreach | exact tool allowlist; human gate tool 미등록 | stdio client와 host의 보안은 본 프로젝트 밖 |
 | approval replay | current-parent, bundle, challenge ID, nonce, expiry binding | actor identity는 인증하지 않음 |
 | viewer tampering | schema + artifact digest + top-level integrity fail-closed | 신뢰된 원본 bundle 배포 경로를 제공하지 않음 |

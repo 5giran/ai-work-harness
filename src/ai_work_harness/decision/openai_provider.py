@@ -25,6 +25,7 @@ from .providers import (
 )
 
 DEFAULT_MODEL = "gpt-5.6-luna"
+OPENAI_API_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_MAX_OUTPUT_TOKENS = 8_000
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -49,6 +50,23 @@ class OpenAIProviderError(HarnessError):
         merged = {"retryable": retryable, **(details or {})}
         super().__init__(code, message, details=merged, exit_code=4)
         self.retryable = retryable
+
+
+def _require_official_endpoint(endpoint: Any) -> None:
+    if str(endpoint) not in {OPENAI_API_BASE_URL, OPENAI_API_BASE_URL + "/"}:
+        # Do not echo an arbitrary URL: it may contain credentials or query secrets.
+        raise OpenAIProviderError(
+            "UNSUPPORTED_OPENAI_ENDPOINT",
+            "OpenAI requires https://api.openai.com/v1; custom endpoints are unsupported",
+        )
+
+
+def validate_openai_endpoint_environment() -> None:
+    """Validate outbound configuration without constructing a client or doing I/O."""
+
+    endpoint = os.environ.get("OPENAI_BASE_URL")
+    if endpoint is not None:
+        _require_official_endpoint(endpoint)
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,20 +550,23 @@ class OpenAIProvider:
         return _OpenAIRecommendationAdapter(self)
 
     def _get_client(self) -> Any:
-        if self._client is not None:
-            return self._client
-        if self._client_factory is not None:
-            self._client = self._client_factory()
-            return self._client
-        try:
-            from openai import OpenAI
-        except ImportError as exc:  # pragma: no cover - depends on optional installation
-            raise OpenAIProviderError(
-                "MODEL_SDK_UNAVAILABLE",
-                "The optional OpenAI SDK is not installed",
-                details={"install_extra": "openai"},
-            ) from exc
-        self._client = OpenAI(timeout=self.timeout_seconds, max_retries=0)
+        validate_openai_endpoint_environment()
+        if self._client is None:
+            if self._client_factory is not None:
+                self._client = self._client_factory()
+            else:
+                try:
+                    from openai import OpenAI
+                except ImportError as exc:  # pragma: no cover - optional installation
+                    raise OpenAIProviderError(
+                        "MODEL_SDK_UNAVAILABLE",
+                        "The optional OpenAI SDK is not installed",
+                        details={"install_extra": "openai"},
+                    ) from exc
+                self._client = OpenAI(
+                    base_url=OPENAI_API_BASE_URL, timeout=self.timeout_seconds, max_retries=0
+                )
+        _require_official_endpoint(getattr(self._client, "base_url", None))
         return self._client
 
     def _validate_outbound_limits(self, context: FrozenDecisionContext) -> None:
@@ -603,6 +624,8 @@ class OpenAIProvider:
                 },
             ) from exc
         for attempt in range(self.max_retries + 1):
+            validate_openai_endpoint_environment()
+            _require_official_endpoint(getattr(client, "base_url", None))
             try:
                 return client.responses.create(**dict(request))
             except Exception as exc:

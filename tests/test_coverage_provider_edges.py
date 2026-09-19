@@ -121,6 +121,8 @@ class _Responses:
 
 
 class _Client:
+    base_url = "https://api.openai.com/v1/"
+
     def __init__(self, outcomes: list[Any]) -> None:
         self.responses = _Responses(outcomes)
 
