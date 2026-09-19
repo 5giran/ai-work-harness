@@ -149,7 +149,9 @@ SEND OPENAI <fingerprint>
 ```
 
 guided outbound confirmation method는 `guided_exact_phrase`다. 모델, prompt, input 또는
-source가 바뀌면 manifest가 달라지므로 이전 consent를 재사용할 수 없다.
+source가 바뀌면 manifest가 달라지므로 이전 consent를 재사용할 수 없다. 목적지는
+`https://api.openai.com/v1`로 고정되어 있다. `OPENAI_BASE_URL`은 미설정 또는 이 주소여야 하며
+다른 주소는 preview·consent·run과 각 요청 전에 거부된다.
 
 provider timeout, refusal 또는 transport 실패는 exit `4`이며 pointer와 active consent를
 변경하지 않는다. 같은 guide 명령으로 재개하면 다음 중 하나를 명시적으로 선택한다.
@@ -168,10 +170,29 @@ input snapshot binding이 달라지기 때문이다. 자동 retry, 자동 fallba
 |---|---|
 | `WRITE_CONFLICT`, exit `3` | 실패한 mutation을 자동 재적용하지 않는다. 고정/current fingerprint를 확인하고 명시적으로 reload한 뒤 새 semantic state를 다시 검토한다. |
 | `WRITE_LOCK_TIMEOUT`, exit `3` | 다른 writer process를 확인한다. 원인을 모른 채 lock 파일을 삭제하지 않는다. |
+| `WRITE_LOCK_PRESENT`, exit `3` | doctor가 lock을 관찰했다. 오류의 `details.doctor`에서 무결성과 lock 상태를 따로 확인하고 아래 복구 절차를 따른다. |
+| `UNSUPPORTED_OPENAI_ENDPOINT`, exit `4` | `OPENAI_BASE_URL`을 해제하거나 공식 주소로 복원한다. injected client도 공식 주소를 사용해야 한다. 실패 시 pointer와 consent는 유지된다. |
+| `WORKFLOW_INTEGRITY_FAILED`, exit `5` | hash/schema가 맞아도 단계별 도메인 규칙이 틀린 저장 상태다. 오류의 `reason_code`를 확인하고 쓰기를 중단한다. |
 | provider/transport exit `4` | pointer와 consent가 유지됐는지 확인하고 같은 manifest retry 또는 local/agent import를 선택한다. |
 | integrity exit `5` | 모든 쓰기를 중단하고 `decision doctor`, pinned `verify`, 백업 비교를 수행한다. guide가 내용을 보여주도록 우회하지 않는다. |
 | expired challenge | 화면에서 만료를 확인하고 새 challenge 발급 여부를 선택한다. |
 | orphan object | doctor로 current graph에 미참조임을 확인한다. 자동 GC는 없다. |
+
+### 강제 종료 뒤 writer lock 복구
+
+1. 동일 root/session에 쓰는 CLI, guided session, MCP 및 자동 작업을 모두 중지하고 새 writer가
+   시작되지 않도록 한다. 단지 명령이 timeout 났다는 이유로 lock을 옮기지 않는다.
+2. `decision doctor --session-id "$SESSION"`을 실행한다. `integrity_ok`는 저장 무결성이고
+   `writer_lock`은 별도 시점 관찰이다. `pid_present`는 PID 존재만 뜻하며 소유권을 증명하지
+   않는다. `pid_absent`도 단독 복구 근거가 아니다. Windows 또는 접근 불가 시 `unknown`이다.
+3. 프로세스 종료 기록 등으로 기존 writer가 끝났고 다른 writer도 없음을 독립적으로 확인한다.
+   소유자나 파일 상태를 확인할 수 없다면 복구를 진행하지 않는다. lock 나이만으로 판단하지 않는다.
+4. 확인을 마쳤다면 `.ai-work-harness/v2/sessions/<session-id>/writer.lock`을 managed 저장소
+   **밖의 새 백업 경로**로 옮겨 보존한다. 기존 백업을 덮어쓰거나 object·snapshot·pointer를
+   수정하지 않는다. 자동 해제·복구 명령은 제공하지 않는다.
+5. doctor가 `ok=true`, `writer_lock.state=absent`인지 확인하고 `decision verify`도 실행한다.
+   doctor의 저장 무결성 검사와 service의 workflow 검증은 별도이므로 둘 다 성공해야 한다.
+   current snapshot을 다시 읽고 검토한 뒤 새 parent로 쓰기를 재개한다.
 
 입력 종료 규칙:
 

@@ -54,6 +54,7 @@ ID와 nonce를 내부 전달한다. 복잡한 raw protocol은 없애지 않고 �
 | 변경 감지 | upstream 변경 시 downstream 활성 참조를 제거하고 구체적인 stale reason을 기록 |
 | 동시 쓰기 | full expected-parent, 5초 writer lock과 atomic pointer replace로 자동 재적용 금지 |
 | 승인 | bundle digest, snapshot, nonce와 만료 시각을 challenge에 binding |
+| 의미 검증 | pinned snapshot의 단계별 gate·근거·평가·review를 검사하고 comparison·최종 결정 규칙을 재검증 |
 | readiness | 승인된 `select`와 동일 pinned snapshot의 전체 검증이 성공할 때만 `ready=true` |
 
 ### 배경
@@ -164,7 +165,8 @@ artifact와 snapshot은 RFC 8785 JCS bytes의 SHA-256으로 주소화된다.
 
 `current.json`만 활성 snapshot을 가리킨다. mutation은 object와 snapshot을 먼저 fsync하고
 pointer를 atomic replace한다. crash로 남은 미참조 object는 활성 상태를 바꾸지 않으며
-`decision doctor`가 보고만 한다.
+`decision doctor`가 보고만 한다. 남은 writer lock은 저장 무결성과 별도로 진단하며 자동으로
+삭제하지 않는다. 복구 절차는 [Operator runbook](docs/operator-runbook.md#5-충돌과-실패-복구)에 있다.
 
 ## OpenAI, MCP와 Viewer
 
@@ -177,6 +179,8 @@ pointer를 atomic replace한다. crash로 남은 미참조 object는 활성 상�
 - `FixtureProvider`는 네트워크 없이 같은 입력에 결정적인 평가·추천을 만든다.
 - OpenAI는 provider, model, prompt/input fingerprint, source byte 수와 evidence 수를 먼저
   보여준다. `SEND OPENAI <fingerprint>`가 정확히 입력되기 전에는 외부 호출이 없다.
+- OpenAI 목적지는 `https://api.openai.com/v1`로 고정한다. 다른 `OPENAI_BASE_URL`은 동의 전부터
+  거부하며, 실제 client 주소도 매 요청 전에 검사한다. custom endpoint는 지원하지 않는다.
 - timeout·refusal 뒤에는 같은 consented manifest 재시도 또는 local/agent import를 고른다.
   manifest가 달라지면 다시 동의해야 하며 자동 fallback은 없다.
 - stdio MCP allowlist에는 confirm, review, final decision, challenge와 approval tool이 없다.

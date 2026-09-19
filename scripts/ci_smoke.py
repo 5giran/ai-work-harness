@@ -195,6 +195,37 @@ assert run_guided_cli(
         if verified.get("result", {}).get("verified") is not True:
             raise SystemExit("v2 initialized snapshot did not verify")
 
+        crashed_writer_smoke = r"""
+import os
+import subprocess
+import sys
+from pathlib import Path
+from ai_work_harness.decision.store import DecisionStore
+
+root = Path(sys.argv[1])
+store = DecisionStore(root, 'crashed-writer-smoke')
+initial = store.initialize()
+child = (
+    "import os, sys; from pathlib import Path; "
+    "from ai_work_harness.decision.store import DecisionStore; "
+    "s = DecisionStore(Path(sys.argv[1]), 'crashed-writer-smoke'); "
+    "lock = s._writer_lock(); lock.__enter__(); os._exit(0)"
+)
+subprocess.run([sys.executable, '-c', child, str(root)], check=True, timeout=20)
+report = store.doctor().as_dict()
+assert report['ok'] is False and report['integrity_ok'] is True
+assert report['writer_lock']['state'] == 'present'
+assert report['writer_lock']['owner_status'] == (
+    'pid_absent' if os.name == 'posix' else 'unknown'
+)
+assert store.paths.writer_lock.exists()
+# The only writer was joined; retain its lock as a manual recovery backup.
+store.paths.writer_lock.rename(root / 'crashed-writer.lock.backup')
+store.commit(expected_parent=initial.sha256, refs={}, operation='recovered')
+assert store.doctor().ok and store.verify().ok
+"""
+        _run([str(python), "-c", crashed_writer_smoke, str(root)])
+
     return 0
 
 

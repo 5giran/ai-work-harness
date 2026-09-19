@@ -21,7 +21,10 @@ artifact envelope의 정확한 top-level field는 다음 여섯 개다.
   "artifact_type": "criteria-set",
   "session_id": "triage-demo",
   "producer": {"kind": "local_operator"},
-  "parents": {"candidate_set": "<sha256>"},
+  "parents": {
+    "candidate_set": "<sha256>",
+    "candidate_confirmation": "<sha256>"
+  },
   "payload": {}
 }
 ```
@@ -100,6 +103,19 @@ object CAS는 프로젝트의 모든 v2 session이 공유하지만 snapshot은 s
 않으며, 손상된 session chain은 object를 live로 만들지 못하고 무결성 issue로 보고된다.
 snapshot reachability와 orphan snapshot 판정은 선택한 session 범위에 머문다. orphan은
 보고만 하며 자동 GC하지 않는다.
+
+### Writer lock 진단
+
+doctor 응답에는 `integrity_ok`와 `writer_lock`이 추가된다. 이는 저장 artifact가 아닌 일시적
+진단 결과다. `ok`는 저장 무결성이 정상이고 선택한 session의 lock이 없을 때만 true다.
+`integrity_ok`는 기존 `issues`가 비어 있는지를 뜻하며 workflow 도메인 검증 결과가 아니다.
+
+`writer_lock`은 `state`, `pid`, `acquired_at`, `owner_status`, `issue`를 포함한다.
+`state`는 `absent|present|invalid|unreadable|changed`이고, `owner_status`는
+`pid_present|pid_absent|unknown`이다. metadata를 읽을 수 없으면 PID와 시각은 null이다.
+POSIX PID 조회는 존재 여부만 관찰하며 Windows에서는 `unknown`을 반환한다. 자동 삭제하지
+않는다. lock만 문제면 service doctor는 `WRITE_LOCK_PRESENT`(exit `3`)와 `details.doctor`를
+반환하고 저장 무결성 오류가 함께 있으면 integrity 오류(exit `5`)를 우선한다.
 
 ## Pinned operator read model
 

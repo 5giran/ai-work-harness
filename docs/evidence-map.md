@@ -19,6 +19,16 @@
 | approval challenge는 replay할 수 없고 동일 final에 active approval이 있으면 다시 발급할 수 없음 | [`test_approval_challenge_cannot_be_replayed_after_commit`](../tests/test_decision_service.py), [`test_same_final_and_active_approval_cannot_be_rechallenged`](../tests/test_decision_service.py) |
 | `request_revision`은 비교를 막고 같은 review 덮어쓰기가 아닌 새 evaluation을 요구 | [`test_revision_request_is_recorded_and_requires_a_new_evaluation`](../tests/test_decision_service.py), [`test_request_revision_commits_only_the_reviewed_prefix_and_returns_to_drafting`](../tests/test_guided_workflow.py) |
 
+추가 경계 회귀 검증:
+
+- [Semantic verification tests](../tests/test_decision_semantic_verification.py): schema/hash가
+  유효해도 필수 gate 누락, 잘못된 근거·평가·review·comparison·최종 결정을 거부하며
+  승인·readiness·export를 차단한다. 정상 진행 중 snapshot은 통과한다.
+- [Writer lock diagnostics tests](../tests/test_writer_lock_diagnostics.py): subprocess 강제 종료,
+  활성 writer, 잘못된 metadata, Windows의 unknown 처리, 파일 변경과 수동 복구를 검사한다.
+  [clean-wheel smoke](../scripts/ci_smoke.py)는 기존 Linux/macOS/Windows CI에서 종료 후 lock
+  진단과 writer 종료 확인 뒤 수동 백업·쓰기 재개를 실행한다.
+
 ### Guided operator UX
 
 | 주장 | 직접 검증하는 test |
@@ -45,6 +55,10 @@
 | v1 migration은 one-way이고 과거 gate를 v2 gate로 승격하지 않음 | [`test_complete_v1_migration_is_one_way_and_idempotent`](../tests/test_decision_migration.py) |
 | MCP에 인간 gate tool이 없고 mutation은 CAS와 idempotency가 필수 | [`test_mcp_registry_is_an_exact_draft_read_allowlist`](../tests/test_mcp_surface.py), [`test_all_mutations_require_cas_and_idempotency`](../tests/test_mcp_surface.py) |
 | viewer는 변조·중복 key를 거부하고 Python이 export한 bundle만 render | [`viewer integrity tests`](../viewer/tests/integrity.test.ts), [`Python export parity test`](../viewer/tests/example.test.ts), [`Playwright offline/tamper/accessibility E2E`](../viewer/tests/e2e/viewer.spec.ts) |
+
+[OpenAI endpoint policy tests](../tests/test_openai_endpoint_policy.py)는 환경 설정과
+injected/factory/cached client의 다른 주소를 거부하고, 동의 뒤 변경과 retry 중 변경도
+추가 network call 없이 차단하는지 검증한다. 실제 외부 API 호출은 사용하지 않는다.
 
 ## 관찰 가능한 데모 자료
 

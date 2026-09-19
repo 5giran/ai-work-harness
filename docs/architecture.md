@@ -55,6 +55,7 @@ confirmation 이후 object/snapshot digest 자체가 같을 필요는 없다.
 - `decision/store.py`: blob/artifact CAS, immutable snapshots, current pointer, writer lock,
   expected-parent compare-and-swap, doctor/verify.
 - `decision/domain.py`: candidate/criteria/evidence/evaluation/review/final-decision policy.
+- `decision/verification.py`: pinned artifact의 단계별 의존성과 도메인 규칙을 읽기 전용으로 재검증.
 - `decision/service.py`: 유일한 workflow transition service와 stale dependency graph.
 - `decision/guidance.py`: 검증된 immutable state를 semantic stage와 다음 action으로 바꾸는
   side-effect 없는 planner.
@@ -89,7 +90,7 @@ pinned/current fingerprint를 보여주고 reload 여부를 묻는다. reload는
 
 1. session writer lock을 최대 5초 동안 획득한다.
 2. `current.json`의 전체 digest와 `expected_parent`를 비교한다.
-3. 요청, schema, domain policy와 모든 참조를 먼저 검증한다.
+3. pinned parent의 활성 binding과 workflow 의미를 재검증한 뒤 요청, schema, domain policy와 모든 참조를 검증한다.
 4. 새 object를 같은 filesystem의 임시 파일에 쓰고 `fsync` 후 atomic rename한다.
 5. 새 snapshot을 같은 방식으로 쓴다.
 6. `current.json`을 atomic replace하고 session directory를 `fsync`한다.
@@ -97,6 +98,8 @@ pinned/current fingerprint를 보여주고 reload 여부를 묻는다. reload는
 
 따라서 crash가 일어나면 pointer는 이전 snapshot 또는 완성된 새 snapshot을 가리킨다.
 pointer 갱신 전 쓰인 object는 orphan일 수 있지만 활성 상태에는 영향을 주지 않는다.
+강제 종료는 `writer.lock`을 남길 수 있다. doctor는 lock metadata와 PID 관찰을 별도 보고하며
+자동 삭제하지 않는다. PID 재사용 때문에 PID 존재 여부만으로 소유권을 증명할 수 없다.
 
 ## Artifact graph와 stale
 
@@ -113,6 +116,11 @@ recommendation, final decision, challenge, approval ref를 제거한다. 제거 
 
 `status`와 `verify`는 `current.json`을 한 번 읽고 같은 snapshot digest를 끝까지 검증한다.
 schema, digest, parent binding, full workflow policy 중 하나라도 실패하면 verified가 아니다.
+`verification.py`는 존재하는 단계의 필수 gate·parent, ID 중복, source excerpt hash, 평가 matrix,
+근거와 review를 검사하고 comparison을 재계산한다. 추천의 적격성·근거, 최종 선택의 적격성·
+위험 수용·추천 관계도 쓰기 경로와 공유하는 순수 함수로 검사한다. 진행 중 세션은 아직 없는
+후속 단계를 요구하지 않는다. 위반은 `WORKFLOW_INTEGRITY_FAILED`(exit `5`)이며 approval,
+readiness, operator state와 export도 같은 verifier를 사용한다. 검증은 저장소를 변경하지 않는다.
 
 - `decision_complete=true`: 검증된 `approved`가 `select` 또는 `reject_all`을 승인했다.
 - `ready=true`: decision complete이고 final disposition이 `select`이며 전체 verify가 성공했다.

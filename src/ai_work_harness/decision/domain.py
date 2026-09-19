@@ -766,3 +766,163 @@ def final_decision_constraints(
         reject_all_shared_risk_cell_ids_by_criterion=shared_risk_cell_ids_by_criterion,
         reject_all_shared_risk_feasible=(not eligible_candidate_ids or bool(shared_risk_criteria)),
     )
+
+
+def validate_final_decision(
+    payload: Any, *, comparison: Mapping[str, Any], producer_kind: str
+) -> dict[str, Any]:
+    """Validate a final choice with the same policy on import and stored-state reads."""
+
+    document = require_object(payload, "final decision")
+    require_exact_fields(
+        document,
+        required=("disposition", "candidate_id", "reason", "risk_acknowledgements"),
+        label="final decision",
+    )
+    disposition = document["disposition"]
+    if disposition not in {"select", "reject_all", "defer", "request_more_evidence"}:
+        raise HarnessError("INVALID_FINAL_DECISION", "Unknown final decision disposition")
+    require_string(document["reason"], "reason")
+    acknowledgement_items = require_string_list(
+        document["risk_acknowledgements"],
+        "risk_acknowledgements",
+    )
+    if len(set(acknowledgement_items)) != len(acknowledgement_items):
+        raise HarnessError(
+            "DUPLICATE_REFERENCE",
+            "Risk acknowledgements must not contain duplicates",
+        )
+    acknowledgements = set(acknowledgement_items)
+    selected = document["candidate_id"]
+    if disposition == "select":
+        if selected not in comparison["eligible_candidate_ids"]:
+            raise HarnessError(
+                "INELIGIBLE_FINAL_DECISION",
+                "Selected candidate fails a must gate",
+            )
+    elif selected is not None:
+        raise HarnessError("INVALID_FINAL_DECISION", "Only select accepts candidate_id")
+    constraints = final_decision_constraints(
+        comparison=comparison,
+        producer_kind=producer_kind,
+        disposition=disposition,
+        candidate_id=selected,
+    )
+    unknown_acknowledgements = constraints.unknown_acknowledgement_cell_ids(acknowledgements)
+    if unknown_acknowledgements:
+        raise HarnessError(
+            "UNKNOWN_REFERENCE",
+            "Risk acknowledgements must reference comparison cells",
+            details={"risk_acknowledgements": list(unknown_acknowledgements)},
+        )
+    missing = constraints.missing_required_risk_acknowledgement_cell_ids(acknowledgements)
+    if missing:
+        raise HarnessError(
+            "RISK_ACKNOWLEDGEMENT_REQUIRED",
+            "Final decision must acknowledge unresolved evaluation risks",
+            details={"missing": list(missing)},
+        )
+    if not constraints.reject_all_shared_risk_satisfied(acknowledgements):
+        acknowledged_by_candidate = constraints.acknowledged_risk_criterion_ids_by_candidate(
+            acknowledgements
+        )
+        raise HarnessError(
+            "REJECT_ALL_SHARED_RISK_REQUIRED",
+            "reject_all must name at least one shared risk for every eligible candidate",
+            details={
+                "eligible_candidate_ids": list(constraints.relevant_candidate_ids),
+                "acknowledged_by_candidate": {
+                    key: list(value) for key, value in acknowledged_by_candidate.items()
+                },
+            },
+        )
+    return document
+
+
+def recommendation_relation(
+    decision: Mapping[str, Any], recommendation: Mapping[str, Any] | None
+) -> str:
+    if recommendation is None or recommendation["disposition"] != "select":
+        return "no_recommendation"
+    if (
+        decision["disposition"] == "select"
+        and decision["candidate_id"] == recommendation["candidate_id"]
+    ):
+        return "same"
+    return "different"
+
+
+def validate_recommendation(
+    payload: Any, *, comparison: Mapping[str, Any], evidence_ids: set[str]
+) -> dict[str, Any]:
+    """Validate a nonbinding recommendation against current candidates and evidence."""
+
+    document = require_object(payload, "recommendation")
+    require_exact_fields(
+        document,
+        required=(
+            "disposition",
+            "candidate_id",
+            "rationale",
+            "evidence_ids",
+            "risks",
+            "uncertainties",
+        ),
+        label="recommendation",
+    )
+    if document["disposition"] not in {"select", "abstain"}:
+        raise HarnessError("INVALID_RECOMMENDATION", "Recommendation must select or abstain")
+    require_string(document["rationale"], "rationale")
+    for field in ("evidence_ids", "risks", "uncertainties"):
+        require_string_list(document[field], field)
+    if len(set(document["evidence_ids"])) != len(document["evidence_ids"]):
+        raise HarnessError(
+            "DUPLICATE_REFERENCE",
+            "Recommendation evidence_ids must not contain duplicates",
+        )
+    unknown_evidence = sorted(set(document["evidence_ids"]) - evidence_ids)
+    if unknown_evidence:
+        raise HarnessError(
+            "UNKNOWN_REFERENCE",
+            "Recommendation references unknown evidence",
+            details={"evidence_ids": unknown_evidence},
+        )
+    if document["disposition"] == "select":
+        if document["candidate_id"] not in comparison["eligible_candidate_ids"]:
+            raise HarnessError(
+                "INELIGIBLE_RECOMMENDATION",
+                "Recommendation may select only a must-eligible candidate",
+            )
+    elif document["candidate_id"] is not None:
+        raise HarnessError("INVALID_RECOMMENDATION", "abstain requires candidate_id: null")
+    return document
+
+
+def require_comparison_reviews(
+    *,
+    cells: Sequence[Mapping[str, Any]],
+    criteria: Sequence[Mapping[str, Any]],
+    reviews: Sequence[Mapping[str, Any]],
+    producer_kind: str,
+) -> None:
+    """Refuse comparison while a required review or any requested revision is pending."""
+
+    completion = review_completion_state(
+        evaluation_cells={(item["candidate_id"], item["criterion_id"]): item for item in cells},
+        criteria={item["criterion_id"]: item for item in criteria},
+        producer_kind=producer_kind,
+        reviews=reviews,
+    )
+    if completion.revision_pending:
+        raise HarnessError(
+            "EVALUATION_REVISION_REQUIRED",
+            "A requested revision requires a new evaluation before comparison",
+            details={"cells": [list(item) for item in completion.revision_required_cell_ids]},
+            exit_code=3,
+        )
+    if not completion.complete:
+        raise HarnessError(
+            "REVIEW_REQUIRED",
+            "All agent-authored must/high cells require completed review",
+            details={"cells": [list(item) for item in completion.pending_cell_ids]},
+        )

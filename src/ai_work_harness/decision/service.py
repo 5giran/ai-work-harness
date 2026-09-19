@@ -20,18 +20,18 @@ from ai_work_harness.decision.canonical import (
 )
 from ai_work_harness.decision.domain import (
     derive_comparison,
-    final_decision_constraints,
     frame_is_confirmable,
-    require_exact_fields,
+    recommendation_relation,
+    require_comparison_reviews,
     require_object,
     require_string,
-    require_string_list,
-    review_completion_state,
     validate_candidates,
     validate_criteria,
     validate_evaluations,
     validate_evidence,
+    validate_final_decision,
     validate_frame,
+    validate_recommendation,
     validate_reviews,
 )
 from ai_work_harness.errors import HarnessError
@@ -289,7 +289,9 @@ def _serialized_mutation(method: Callable[..., Any]) -> Callable[..., Any]:
                         exit_code=5,
                     )
                 return render(replay)
-            self._verify_active_bindings(self._current())
+            snapshot = self._current()
+            self._verify_active_bindings(snapshot)
+            self._verify_workflow(snapshot)
             return method(self, *args, **kwargs)
 
     return wrapped
@@ -879,6 +881,9 @@ class DecisionService:
         provider: str = "openai",
         model: str | None = None,
     ) -> dict[str, Any]:
+        from ai_work_harness.decision.openai_provider import validate_openai_endpoint_environment
+
+        validate_openai_endpoint_environment()
         snapshot = self._current()
         manifest = self._agent_manifest(
             operation=operation,
@@ -903,6 +908,9 @@ class DecisionService:
         model: str | None = None,
         method: str = "digest_challenge",
     ) -> dict[str, Any]:
+        from ai_work_harness.decision.openai_provider import validate_openai_endpoint_environment
+
+        validate_openai_endpoint_environment()
         if method not in {"digest_challenge", "guided_exact_phrase"}:
             raise HarnessError(
                 "INVALID_CONFIRMATION_METHOD",
@@ -1110,27 +1118,9 @@ class DecisionService:
         if "evaluation_review_set" in refs:
             review_sha = refs["evaluation_review_set"]
             reviews = _artifact_payload(self._read(refs, "evaluation_review_set"))["reviews"]
-        completion = review_completion_state(
-            evaluation_cells={
-                (item["candidate_id"], item["criterion_id"]): item for item in evaluations
-            },
-            criteria={item["criterion_id"]: item for item in criteria},
-            producer_kind=producer_kind,
-            reviews=reviews,
+        require_comparison_reviews(
+            cells=evaluations, criteria=criteria, producer_kind=producer_kind, reviews=reviews
         )
-        if completion.revision_pending:
-            raise HarnessError(
-                "EVALUATION_REVISION_REQUIRED",
-                "A requested revision requires a new evaluation before comparison",
-                details={"cells": [list(item) for item in completion.revision_required_cell_ids]},
-                exit_code=3,
-            )
-        if not completion.complete:
-            raise HarnessError(
-                "REVIEW_REQUIRED",
-                "All agent-authored must/high cells require completed review",
-                details={"cells": [list(item) for item in completion.pending_cell_ids]},
-            )
         result = derive_comparison(
             candidates=candidates,
             criteria=criteria,
@@ -1170,52 +1160,17 @@ class DecisionService:
         producer_kind: str,
         producer_extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        document = require_object(payload, "recommendation")
-        require_exact_fields(
-            document,
-            required=(
-                "disposition",
-                "candidate_id",
-                "rationale",
-                "evidence_ids",
-                "risks",
-                "uncertainties",
-            ),
-            label="recommendation",
-        )
-        if document["disposition"] not in {"select", "abstain"}:
-            raise HarnessError("INVALID_RECOMMENDATION", "Recommendation must select or abstain")
-        require_string(document["rationale"], "rationale")
-        for field in ("evidence_ids", "risks", "uncertainties"):
-            require_string_list(document[field], field)
-        if len(set(document["evidence_ids"])) != len(document["evidence_ids"]):
-            raise HarnessError(
-                "DUPLICATE_REFERENCE",
-                "Recommendation evidence_ids must not contain duplicates",
-            )
         current = self._current()
         refs = _snapshot_refs(current)
         comparison_sha = self._require_ref(refs, "comparison")
-        comparison = _artifact_payload(self._read(refs, "comparison"))
-        evidence_ids = {
-            item["evidence_id"]
-            for item in _artifact_payload(self._read(refs, "evidence_set"))["evidence"]
-        }
-        unknown_evidence = sorted(set(document["evidence_ids"]) - evidence_ids)
-        if unknown_evidence:
-            raise HarnessError(
-                "UNKNOWN_REFERENCE",
-                "Recommendation references unknown evidence",
-                details={"evidence_ids": unknown_evidence},
-            )
-        if document["disposition"] == "select":
-            if document["candidate_id"] not in comparison["eligible_candidate_ids"]:
-                raise HarnessError(
-                    "INELIGIBLE_RECOMMENDATION",
-                    "Recommendation may select only a must-eligible candidate",
-                )
-        elif document["candidate_id"] is not None:
-            raise HarnessError("INVALID_RECOMMENDATION", "abstain requires candidate_id: null")
+        document = validate_recommendation(
+            payload,
+            comparison=_artifact_payload(self._read(refs, "comparison")),
+            evidence_ids={
+                item["evidence_id"]
+                for item in _artifact_payload(self._read(refs, "evidence_set"))["evidence"]
+            },
+        )
         _, digest = self._create_artifact(
             artifact_type="recommendation",
             producer_kind=producer_kind,
@@ -1415,8 +1370,12 @@ class DecisionService:
         expected_parent: str,
         provider: Any | None = None,
     ) -> dict[str, Any]:
-        from ai_work_harness.decision.openai_provider import OpenAIProvider
+        from ai_work_harness.decision.openai_provider import (
+            OpenAIProvider,
+            validate_openai_endpoint_environment,
+        )
 
+        validate_openai_endpoint_environment()
         current = self._current()
         if _snapshot_sha(current) != expected_parent:
             raise HarnessError(
@@ -1735,28 +1694,15 @@ class DecisionService:
 
     @_serialized_mutation
     def import_final_decision(self, payload: Any, *, expected_parent: str) -> dict[str, Any]:
-        document = require_object(payload, "final decision")
-        require_exact_fields(
-            document,
-            required=("disposition", "candidate_id", "reason", "risk_acknowledgements"),
-            label="final decision",
-        )
-        disposition = document["disposition"]
-        if disposition not in {"select", "reject_all", "defer", "request_more_evidence"}:
-            raise HarnessError("INVALID_FINAL_DECISION", "Unknown final decision disposition")
-        require_string(document["reason"], "reason")
-        acknowledgement_items = require_string_list(
-            document["risk_acknowledgements"],
-            "risk_acknowledgements",
-        )
-        if len(set(acknowledgement_items)) != len(acknowledgement_items):
-            raise HarnessError(
-                "DUPLICATE_REFERENCE",
-                "Risk acknowledgements must not contain duplicates",
-            )
-        acknowledgements = set(acknowledgement_items)
         current = self._current()
         refs = _snapshot_refs(current)
+        comparison_sha = self._require_ref(refs, "comparison")
+        comparison = _artifact_payload(self._read(refs, "comparison"))
+        document = validate_final_decision(
+            payload,
+            comparison=comparison,
+            producer_kind=_artifact_producer_kind(self._read(refs, "evaluation_set")),
+        )
         if "final_decision" in refs:
             active_final = _artifact_payload(self._read(refs, "final_decision"))
             if _final_decision_semantics(active_final) == _final_decision_semantics(document):
@@ -1766,67 +1712,15 @@ class DecisionService:
                     details={"final_decision_sha256": refs["final_decision"]},
                     exit_code=3,
                 )
-        comparison_sha = self._require_ref(refs, "comparison")
-        comparison = _artifact_payload(self._read(refs, "comparison"))
-        selected = document["candidate_id"]
-        if disposition == "select":
-            if selected not in comparison["eligible_candidate_ids"]:
-                raise HarnessError(
-                    "INELIGIBLE_FINAL_DECISION",
-                    "Selected candidate fails a must gate",
-                )
-        elif selected is not None:
-            raise HarnessError("INVALID_FINAL_DECISION", "Only select accepts candidate_id")
-        evaluation_artifact = self._read(refs, "evaluation_set")
-        producer_kind = _artifact_producer_kind(evaluation_artifact)
-        constraints = final_decision_constraints(
-            comparison=comparison,
-            producer_kind=producer_kind,
-            disposition=disposition,
-            candidate_id=selected,
-        )
-        unknown_acknowledgements = constraints.unknown_acknowledgement_cell_ids(acknowledgements)
-        if unknown_acknowledgements:
-            raise HarnessError(
-                "UNKNOWN_REFERENCE",
-                "Risk acknowledgements must reference comparison cells",
-                details={"risk_acknowledgements": list(unknown_acknowledgements)},
-            )
-        missing = constraints.missing_required_risk_acknowledgement_cell_ids(acknowledgements)
-        if missing:
-            raise HarnessError(
-                "RISK_ACKNOWLEDGEMENT_REQUIRED",
-                "Final decision must acknowledge unresolved evaluation risks",
-                details={"missing": list(missing)},
-            )
-        if not constraints.reject_all_shared_risk_satisfied(acknowledgements):
-            acknowledged_by_candidate = constraints.acknowledged_risk_criterion_ids_by_candidate(
-                acknowledgements
-            )
-            raise HarnessError(
-                "REJECT_ALL_SHARED_RISK_REQUIRED",
-                "reject_all must name at least one shared risk for every eligible candidate",
-                details={
-                    "eligible_candidate_ids": list(constraints.relevant_candidate_ids),
-                    "acknowledged_by_candidate": {
-                        key: list(value) for key, value in acknowledged_by_candidate.items()
-                    },
-                },
-            )
-        recommendation_relation = "no_recommendation"
         parents = {"comparison": comparison_sha}
+        recommendation = None
         if "recommendation" in refs:
             parents["recommendation"] = refs["recommendation"]
             recommendation = _artifact_payload(self._read(refs, "recommendation"))
-            if disposition == "select" and recommendation["disposition"] == "select":
-                recommendation_relation = (
-                    "same" if recommendation["candidate_id"] == selected else "different"
-                )
-            elif recommendation["disposition"] == "select":
-                recommendation_relation = "different"
+        relation = recommendation_relation(document, recommendation)
         final_payload = {
             **document,
-            "recommendation_relation": recommendation_relation,
+            "recommendation_relation": relation,
             "recorded_at": _timestamp(self.clock()),
         }
         _, digest = self._create_artifact(
@@ -1846,7 +1740,7 @@ class DecisionService:
             snapshot,
             artifact="final_decision",
             artifact_sha256=digest,
-            recommendation_relation=recommendation_relation,
+            recommendation_relation=relation,
         )
 
     @_serialized_mutation
@@ -1858,6 +1752,7 @@ class DecisionService:
     ) -> dict[str, Any]:
         if disposition not in {"approved", "rejected", "changes_requested"}:
             raise HarnessError("INVALID_APPROVAL_DISPOSITION", "Unknown approval disposition")
+        self.verify(expected_parent)
         current = self._current()
         if _snapshot_sha(current) != expected_parent:
             raise HarnessError(
@@ -1952,6 +1847,7 @@ class DecisionService:
     ) -> dict[str, Any]:
         reason_value = require_string(reason, "reason")
         assert reason_value is not None
+        self.verify(expected_parent)
         current = self._current()
         if _snapshot_sha(current) != expected_parent:
             raise HarnessError(
@@ -2290,6 +2186,36 @@ class DecisionService:
                     exit_code=5,
                 )
 
+    def _verify_workflow(self, snapshot: Any) -> None:
+        from ai_work_harness.decision.verification import verify_workflow
+
+        refs = _snapshot_refs(snapshot)
+        try:
+            artifacts = {
+                key: _artifact_dict(self.store.read_artifact(digest))
+                for key, digest in refs.items()
+            }
+            excerpt_hashes = {}
+            if "source_manifest" in artifacts and "evidence_set" in artifacts:
+                excerpt_hashes = self._source_excerpt_hashes(
+                    artifacts["source_manifest"]["payload"], artifacts["evidence_set"]["payload"]
+                )
+            verify_workflow(refs=refs, artifacts=artifacts, excerpt_hashes=excerpt_hashes)
+        except HarnessError as exc:
+            raise HarnessError(
+                "WORKFLOW_INTEGRITY_FAILED",
+                "Stored workflow violates decision policy",
+                details={"reason_code": exc.code, "reason": exc.message},
+                exit_code=5,
+            ) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HarnessError(
+                "WORKFLOW_INTEGRITY_FAILED",
+                "Stored workflow structure is invalid",
+                details={"reason_code": "INVALID_WORKFLOW_STATE"},
+                exit_code=5,
+            ) from exc
+
     def verify(self, snapshot_sha256: str | None = None) -> dict[str, Any]:
         snapshot = (
             self.store.load_snapshot(snapshot_sha256)
@@ -2315,6 +2241,7 @@ class DecisionService:
                 exit_code=5,
             )
         self._verify_active_bindings(snapshot)
+        self._verify_workflow(snapshot)
         return self._result(
             snapshot,
             verified=True,
@@ -2596,6 +2523,18 @@ class DecisionService:
         else:
             details = {key: value for key, value in vars(report).items() if not key.startswith("_")}
         if getattr(report, "ok", False) is not True:
+            lock = details.get("writer_lock")
+            if (
+                details.get("integrity_ok") is True
+                and isinstance(lock, dict)
+                and lock.get("state") != "absent"
+            ):
+                raise HarnessError(
+                    "WRITE_LOCK_PRESENT",
+                    "Storage integrity passed, but the writer lock requires operator attention",
+                    details={"doctor": details},
+                    exit_code=3,
+                )
             raise HarnessError(
                 "INTEGRITY_VERIFICATION_FAILED",
                 "Decision doctor found integrity damage",
